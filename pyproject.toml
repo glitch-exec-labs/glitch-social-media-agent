@@ -1,9 +1,32 @@
 [project]
 name = "glitch-social-media-agent"
 version = "0.1.0"
-description = "Glitch Social Media Agent — autonomous video content + ORM agent for Glitch Executor. Mines shipped artifacts, generates short-form video (YouTube Shorts/X/Instagram Reels), and manages brand reputation autonomously."
+description = "Autonomous social media identity agent — mines shipped artifacts, generates short-form video with AI models, publishes to YouTube Shorts / X / Instagram Reels, and manages ORM within hard guardrails."
 requires-python = ">=3.11"
 readme = "README.md"
+license = { file = "LICENSE" }
+keywords = [
+  "social-media-agent", "ai-video-generation", "youtube-shorts", "orm",
+  "langgraph", "kling", "short-form-video", "autonomous-agent",
+  "content-automation", "brand-identity",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Internet :: WWW/HTTP",
+  "Topic :: Multimedia :: Video",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Framework :: AsyncIO",
+]
+
+[project.urls]
+Homepage = "https://glitchexecutor.com"
+Repository = "https://github.com/glitch-exec-labs/glitch-social-media-agent"
+Issues = "https://github.com/glitch-exec-labs/glitch-social-media-agent/issues"
 
 dependencies = [
   # Web / server
