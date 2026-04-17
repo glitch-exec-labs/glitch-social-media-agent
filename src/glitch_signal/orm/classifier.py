@@ -54,10 +54,17 @@ Respond JSON only:
 """
 
 
-async def classify(mention_body: str, platform: str) -> dict:
-    """Classify a mention. Returns dict with tier, sentiment, confidence, reasoning."""
+async def classify(
+    mention_body: str,
+    platform: str,
+    brand_id: str | None = None,
+) -> dict:
+    """Classify a mention. Returns dict with tier, sentiment, confidence, reasoning.
+
+    brand_id selects which brand's min_confidence_threshold applies.
+    """
     min_confidence = (
-        brand_config()
+        brand_config(brand_id)
         .get("orm_guardrails", {})
         .get("min_confidence_threshold", 0.7)
     )

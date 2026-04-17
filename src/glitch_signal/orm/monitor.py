@@ -78,11 +78,17 @@ async def _poll_twitter() -> int:
         if await _already_seen(mention_id):
             continue
 
-        is_safe, hit_phrase = guardrails.check(body)
-        tier_data = await classifier.classify(body, "twitter")
+        # ORM monitor today targets a single (Glitch Executor) account per
+        # platform, so mentions are bound to the default brand. When multi-
+        # account ORM lands, derive brand_id from the receiving account here.
+        brand_id = settings().default_brand_id
+
+        is_safe, hit_phrase = guardrails.check(body, brand_id=brand_id)
+        tier_data = await classifier.classify(body, "twitter", brand_id=brand_id)
 
         event = MentionEvent(
             id=str(uuid.uuid4()),
+            brand_id=brand_id,
             platform="twitter",
             mention_id=mention_id,
             body=body,

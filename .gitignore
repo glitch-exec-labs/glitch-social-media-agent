@@ -23,8 +23,12 @@ credentials/
 *.json.credentials
 youtube_token.json
 
-# Brand config (private)
+# Brand configs (private — real values live on the deployed box only)
 brand.config.json
+brand/configs/*.json
+!brand/configs/.gitkeep
+brand/prompts/*.md
+!brand/prompts/.gitkeep
 
 # Generated videos — large binary files
 /var/lib/glitch-signal/

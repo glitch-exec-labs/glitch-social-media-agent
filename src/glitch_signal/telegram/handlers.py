@@ -10,7 +10,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from glitch_signal.config import settings
+from glitch_signal.config import brand_config, brand_ids, settings
 from glitch_signal.db.models import (
     MentionEvent,
     OrmResponse,
@@ -76,22 +76,34 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         cost_r = await session.execute(select(VideoJob))
 
-    pending_veto = len(pending_veto_r.scalars().all())
-    queued = len(queued_r.scalars().all())
+    pending_veto_rows = pending_veto_r.scalars().all()
+    queued_rows = queued_r.scalars().all()
     last_signal = signals_r.scalar_one_or_none()
     all_jobs = cost_r.scalars().all()
 
     # Cost this week (rough — sum all job costs, not week-filtered)
     total_cost = sum(j.cost_usd or 0.0 for j in all_jobs)
 
-    msg = (
-        f"Glitch Social Media Agent status\n"
-        f"Pending veto: {pending_veto}\n"
-        f"Queued to publish: {queued}\n"
-        f"Last signal: {last_signal.summary[:60] if last_signal else 'none'}\n"
-        f"Total LLM+video cost: ${total_cost:.2f}"
-    )
-    await update.message.reply_text(msg)
+    configured_brands = brand_ids()
+    lines = ["Glitch Social Media Agent status"]
+
+    if len(configured_brands) > 1:
+        # Multi-brand: break counts down by brand so the operator can tell at
+        # a glance which brand is driving the queue depth.
+        lines.append(f"Brands configured: {', '.join(configured_brands)}")
+        for bid in configured_brands:
+            display = brand_config(bid).get("display_name", bid)
+            pv = sum(1 for sp in pending_veto_rows if getattr(sp, "brand_id", None) == bid)
+            q  = sum(1 for sp in queued_rows       if getattr(sp, "brand_id", None) == bid)
+            lines.append(f"  [{display}] pending_veto={pv} queued={q}")
+    else:
+        lines.append(f"Pending veto: {len(pending_veto_rows)}")
+        lines.append(f"Queued to publish: {len(queued_rows)}")
+
+    lines.append(f"Last signal: {last_signal.summary[:60] if last_signal else 'none'}")
+    lines.append(f"Total LLM+video cost: ${total_cost:.2f}")
+
+    await update.message.reply_text("\n".join(lines))
 
 
 async def cmd_signals(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signal.glitchexecutor.com/schema/brand.config.schema.json",
+  "title": "Glitch Signal brand config",
+  "type": "object",
+  "required": ["brand_id", "display_name", "timezone"],
+  "additionalProperties": false,
+  "properties": {
+    "brand_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Stable, kebab/snake-case identifier. Must match the config filename stem (e.g. 'glitch_executor' for brand/configs/glitch_executor.json)."
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timezone": {
+      "type": "string",
+      "description": "IANA timezone, e.g. 'UTC', 'Asia/Kolkata'."
+    },
+    "content_source": {
+      "type": "string",
+      "enum": ["ai_generated", "drive_footage"],
+      "default": "ai_generated",
+      "description": "ai_generated = Kling/Runway pipeline. drive_footage = pre-edited clips from a Drive folder (Nmahya-style)."
+    },
+    "brand": {
+      "type": "object",
+      "description": "Visual + voice identity used by the video assembler and script writer.",
+      "additionalProperties": true,
+      "properties": {
+        "name": {"type": "string"},
+        "accent_color": {"type": "string"},
+        "base_color": {"type": "string"},
+        "secondary_color": {"type": "string"},
+        "watermark_path": {"type": ["string", "null"]},
+        "voice": {"type": "string"}
+      }
+    },
+    "video_model_routing": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "phase": {"type": "integer"},
+        "model_map": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    },
+    "orm_guardrails": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "hard_stop_phrases": {"type": "array", "items": {"type": "string"}},
+        "competitor_names": {"type": "array", "items": {"type": "string"}},
+        "auto_respond_tiers": {"type": "array", "items": {"type": "string"}},
+        "review_window_seconds": {"type": "object"},
+        "escalate_tiers": {"type": "array", "items": {"type": "string"}},
+        "ignore_tiers": {"type": "array", "items": {"type": "string"}},
+        "min_confidence_threshold": {"type": "number"}
+      }
+    },
+    "platforms": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "youtube": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "privacy_status": {"type": "string"},
+            "default_tags": {"type": "array", "items": {"type": "string"}},
+            "category_id": {"type": "string"}
+          }
+        },
+        "twitter":   {"type": "object", "additionalProperties": true},
+        "instagram": {"type": "object", "additionalProperties": true},
+        "tiktok":    {"type": "object", "additionalProperties": true}
+      }
+    },
+    "default_hashtags": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": []
+    },
+    "voice_prompt_path": {
+      "type": ["string", "null"],
+      "description": "Optional path (relative to repo root) to a markdown voice guide used by the caption writer."
+    }
+  }
+}

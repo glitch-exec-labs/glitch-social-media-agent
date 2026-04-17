@@ -29,8 +29,9 @@ async def video_router_node(state: SignalAgentState) -> SignalAgentState:
     if not shots:
         return {**state, "error": "video_router: no shots in state", "routed_shots": []}
 
+    brand_id = state.get("brand_id") or settings().default_brand_id
     routing_table: dict[str, str] = (
-        brand_config()
+        brand_config(brand_id)
         .get("video_model_routing", {})
         .get("model_map", {})
     )

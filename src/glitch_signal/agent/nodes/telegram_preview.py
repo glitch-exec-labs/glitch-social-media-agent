@@ -14,7 +14,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 
 from glitch_signal.agent.state import SignalAgentState
-from glitch_signal.config import settings
+from glitch_signal.config import brand_config, brand_ids, settings
 from glitch_signal.db.models import ContentScript, ScheduledPost, VideoAsset
 from glitch_signal.db.session import _session_factory
 
@@ -42,11 +42,18 @@ async def telegram_preview_node(state: SignalAgentState) -> SignalAgentState:
     veto_deadline = now + timedelta(hours=VETO_WINDOW_HOURS)
     scheduled_for = now + timedelta(hours=VETO_WINDOW_HOURS)
 
+    brand_id = (
+        state.get("brand_id")
+        or (getattr(asset, "brand_id", None) if asset else None)
+        or settings().default_brand_id
+    )
+
     # Write ScheduledPost in pending_veto state
     factory = _session_factory()
     async with factory() as session:
         sp = ScheduledPost(
             id=str(uuid.uuid4()),
+            brand_id=brand_id,
             asset_id=asset_id,
             platform=platform,
             scheduled_for=scheduled_for,
@@ -58,7 +65,7 @@ async def telegram_preview_node(state: SignalAgentState) -> SignalAgentState:
         sp_id = sp.id
 
     # Send Telegram preview
-    caption = _build_caption(cs, asset, platform, sp_id)
+    caption = _build_caption(cs, asset, platform, sp_id, brand_id=brand_id)
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Approve now", callback_data=f"approve:{sp_id}"),
         InlineKeyboardButton("Veto", callback_data=f"veto:{sp_id}"),
@@ -79,7 +86,7 @@ async def telegram_preview_node(state: SignalAgentState) -> SignalAgentState:
     }
 
 
-def _build_caption(cs, asset, platform: str, sp_id: str) -> str:
+def _build_caption(cs, asset, platform: str, sp_id: str, brand_id: str | None = None) -> str:
     platform_label = {
         "youtube_shorts": "YouTube Shorts",
         "twitter": "X / Twitter",
@@ -90,8 +97,15 @@ def _build_caption(cs, asset, platform: str, sp_id: str) -> str:
     duration = f"{getattr(asset, 'duration_s', 0):.0f}s" if asset else "?"
     qc = f"{getattr(asset, 'quality_score', 0) or 0:.2f}" if asset else "?"
 
+    # Brand-prefix the header when more than one brand is configured, so
+    # the operator doesn't confuse previews across brands.
+    prefix = ""
+    if brand_id and len(brand_ids()) > 1:
+        display = brand_config(brand_id).get("display_name", brand_id)
+        prefix = f"[{display}] "
+
     return (
-        f"Video preview — {platform_label}\n"
+        f"{prefix}Video preview — {platform_label}\n"
         f"Type: {content_type} | Duration: {duration} | QC: {qc}\n"
         f"ID: {sp_id[:8]}\n\n"
         f"Approve = publish in 48h. Veto = cancel."

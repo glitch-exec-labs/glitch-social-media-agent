@@ -67,7 +67,8 @@ async def process_mention(mention_id: str) -> None:
             return
 
         tier = event.tier or "negative_severe"
-        cfg = brand_config().get("orm_guardrails", {})
+        brand_id = getattr(event, "brand_id", None)
+        cfg = brand_config(brand_id).get("orm_guardrails", {})
         auto_tiers: list[str] = cfg.get("auto_respond_tiers", [])
         escalate_tiers: list[str] = cfg.get("escalate_tiers", [])
         ignore_tiers: list[str] = cfg.get("ignore_tiers", [])
@@ -155,8 +156,8 @@ async def _generate_github_response(event: MentionEvent) -> str:
 
 
 async def _send_response(event: MentionEvent, draft: str, sent_by: str) -> None:
-    # Defense-in-depth guardrail re-check
-    is_safe, hit = guardrails.check(draft)
+    # Defense-in-depth guardrail re-check (brand-scoped)
+    is_safe, hit = guardrails.check(draft, brand_id=getattr(event, "brand_id", None))
     if not is_safe:
         log.warning("responder.draft_blocked_by_guardrail", hit_phrase=hit)
         return
@@ -168,6 +169,7 @@ async def _send_response(event: MentionEvent, draft: str, sent_by: str) -> None:
     async with factory() as session:
         orm_resp = OrmResponse(
             id=str(uuid.uuid4()),
+            brand_id=getattr(event, "brand_id", "glitch_executor"),
             mention_id=event.id,
             draft_body=draft,
             status="auto_sent" if sent_by == "auto" else "sent",
@@ -189,6 +191,7 @@ async def _queue_for_review(event: MentionEvent, draft: str, review_s: int) -> N
     async with factory() as session:
         orm_resp = OrmResponse(
             id=str(uuid.uuid4()),
+            brand_id=getattr(event, "brand_id", "glitch_executor"),
             mention_id=event.id,
             draft_body=draft,
             status="pending_review",
@@ -216,6 +219,7 @@ async def _escalate(event: MentionEvent) -> None:
     async with factory() as session:
         orm_resp = OrmResponse(
             id=str(uuid.uuid4()),
+            brand_id=getattr(event, "brand_id", "glitch_executor"),
             mention_id=event.id,
             draft_body="",
             status="escalated",

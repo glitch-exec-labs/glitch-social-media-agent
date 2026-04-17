@@ -103,8 +103,8 @@ cp .env.example .env
 # Fill in: KLING_API_KEY, ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN_SIGNAL,
 #          TELEGRAM_ADMIN_IDS, YOUTUBE_CLIENT_SECRETS_FILE
 
-cp brand.config.example.json brand.config.json
-# Edit: watermark_path, competitor_names, model routing
+cp brand/configs.example/glitch_executor.example.json brand/configs/glitch_executor.json
+# Edit: watermark_path, competitor_names, model routing, platforms.*.enabled
 
 # 3. Database
 createdb glitch_signal
@@ -142,15 +142,43 @@ curl http://127.0.0.1:3111/healthz
 | `DISPATCH_MODE` | yes | `dry_run` (no external calls) or `live` |
 | `VIDEO_STORAGE_PATH` | yes | Directory for generated videos |
 
-### `brand.config.json` (from `brand.config.example.json`)
+### Brand configs — multi-brand, per-file
 
-Externalises runtime-tunable config — update without redeploy:
+One file per brand under `brand/configs/<brand_id>.json`. All files in that
+directory are gitignored; real values only live on the deployed box. Committed
+templates live in `brand/configs.example/`. Every file is validated against
+`brand/schema/brand.config.schema.json`.
 
-- `brand.watermark_path` — cobra watermark image for video overlay
+```
+brand/
+  configs/                     # gitignored
+    glitch_executor.json       # real values — deployed only
+    nmahya.json                # added by Nmahya onboarding
+  configs.example/             # committed templates
+    glitch_executor.example.json
+    nmahya.example.json
+  schema/
+    brand.config.schema.json
+  prompts/                     # gitignored voice guides per brand
+    nmahya_voice.md
+```
+
+Each config carries:
+
+- `brand_id` — must equal the filename stem (e.g. `glitch_executor`)
+- `display_name`, `timezone`, `content_source` (`ai_generated` | `drive_footage`)
+- `brand.watermark_path` — watermark image for video overlay
 - `video_model_routing.model_map` — per-shot-hint model routing table
 - `orm_guardrails.hard_stop_phrases` — phrases that trigger immediate escalation
 - `orm_guardrails.competitor_names` — auto-escalate competitor mentions
-- `platforms.youtube.default_tags` — hashtags added to every upload
+- `platforms.<youtube|twitter|instagram|tiktok>` — per-platform toggles & metadata
+
+`DEFAULT_BRAND_ID` (env) picks which brand is used when no brand context is
+available (legacy Glitch Executor scout runs, ORM monitor mentions, etc.).
+
+**Adding a new brand:** drop a JSON file in `brand/configs/`, make sure its
+`brand_id` matches the filename stem, restart the service. No code change,
+no redeploy beyond config.
 
 ---
 
@@ -163,7 +191,7 @@ Hard-stop phrases trigger an **immediate Telegram alert and zero automated respo
 - Legal threats (`"legal action"`, `"lawsuit"`, `"lawyer"`)
 - Return guarantees (`"guarantee"`, `"certain returns"`)
 
-Edit `brand.config.json` → `orm_guardrails.hard_stop_phrases` to update without redeploy.
+Edit `brand/configs/<brand_id>.json` → `orm_guardrails.hard_stop_phrases` to update without redeploy. Each brand has its own guardrail list.
 
 ### Response tiers
 

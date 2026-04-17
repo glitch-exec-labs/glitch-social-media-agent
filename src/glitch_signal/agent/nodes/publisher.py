@@ -39,8 +39,9 @@ async def publish(scheduled_post_id: str) -> None:
         await session.commit()
 
     try:
+        brand_id = getattr(sp, "brand_id", None) or getattr(asset, "brand_id", None)
         platform_post_id, platform_url = await _publish_to_platform(
-            sp.platform, asset.file_path, asset.script_id
+            sp.platform, asset.file_path, asset.script_id, brand_id=brand_id
         )
     except Exception as exc:
         log.error("publisher.failed", scheduled_post_id=scheduled_post_id, error=str(exc))
@@ -56,6 +57,7 @@ async def publish(scheduled_post_id: str) -> None:
 
         pub = PublishedPost(
             id=str(uuid.uuid4()),
+            brand_id=getattr(sp, "brand_id", "glitch_executor") if sp else "glitch_executor",
             scheduled_post_id=scheduled_post_id,
             platform=sp.platform if sp else "unknown",
             platform_post_id=platform_post_id,
@@ -74,15 +76,18 @@ async def publish(scheduled_post_id: str) -> None:
 
 
 async def _publish_to_platform(
-    platform: str, file_path: str, script_id: str
+    platform: str,
+    file_path: str,
+    script_id: str,
+    brand_id: str | None = None,
 ) -> tuple[str, str | None]:
     if settings().is_dry_run:
-        log.info("publisher.dry_run", platform=platform, file_path=file_path)
+        log.info("publisher.dry_run", platform=platform, file_path=file_path, brand_id=brand_id)
         return f"dry-run-{uuid.uuid4().hex[:8]}", None
 
     if platform == "youtube_shorts":
         from glitch_signal.platforms.youtube import upload_short
-        return await upload_short(file_path, script_id)
+        return await upload_short(file_path, script_id, brand_id=brand_id)
 
     if platform == "twitter":
         from glitch_signal.platforms.twitter import post_video

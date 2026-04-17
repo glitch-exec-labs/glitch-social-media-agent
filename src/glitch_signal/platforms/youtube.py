@@ -24,7 +24,11 @@ YOUTUBE_API_SERVICE = "youtube"
 YOUTUBE_API_VERSION = "v3"
 
 
-async def upload_short(file_path: str, script_id: str) -> tuple[str, str | None]:
+async def upload_short(
+    file_path: str,
+    script_id: str,
+    brand_id: str | None = None,
+) -> tuple[str, str | None]:
     """Upload a video as a YouTube Short. Returns (video_id, video_url)."""
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
@@ -45,8 +49,8 @@ async def upload_short(file_path: str, script_id: str) -> tuple[str, str | None]
 
     youtube = build(YOUTUBE_API_SERVICE, YOUTUBE_API_VERSION, credentials=creds)
 
-    title, description, tags = await _build_metadata(script_id)
-    yt_cfg = brand_config().get("platforms", {}).get("youtube", {})
+    title, description, tags = await _build_metadata(script_id, brand_id=brand_id)
+    yt_cfg = brand_config(brand_id).get("platforms", {}).get("youtube", {})
     privacy = yt_cfg.get("privacy_status", "public")
     category_id = yt_cfg.get("category_id", "28")
 
@@ -76,12 +80,15 @@ async def upload_short(file_path: str, script_id: str) -> tuple[str, str | None]
     return video_id, video_url
 
 
-async def _build_metadata(script_id: str) -> tuple[str, str, list[str]]:
+async def _build_metadata(
+    script_id: str,
+    brand_id: str | None = None,
+) -> tuple[str, str, list[str]]:
     factory = _session_factory()
     async with factory() as session:
         cs = await session.get(ContentScript, script_id) if script_id else None
 
-    yt_cfg = brand_config().get("platforms", {}).get("youtube", {})
+    yt_cfg = brand_config(brand_id).get("platforms", {}).get("youtube", {})
     default_tags: list[str] = yt_cfg.get("default_tags", ["shorts", "glitchexecutor"])
 
     if cs:

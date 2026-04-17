@@ -1,4 +1,8 @@
 {
+  "brand_id": "glitch_executor",
+  "display_name": "Glitch Social Media Agent",
+  "timezone": "UTC",
+  "content_source": "ai_generated",
   "brand": {
     "name": "Glitch Social Media Agent",
     "accent_color": "#00ff88",
@@ -45,9 +49,15 @@
   },
   "platforms": {
     "youtube": {
+      "enabled": true,
       "privacy_status": "public",
       "default_tags": ["shorts", "algotrading", "tradingbot", "glitchexecutor"],
       "category_id": "28"
-    }
-  }
+    },
+    "twitter":   {"enabled": false},
+    "instagram": {"enabled": false},
+    "tiktok":    {"enabled": false}
+  },
+  "default_hashtags": [],
+  "voice_prompt_path": null
 }

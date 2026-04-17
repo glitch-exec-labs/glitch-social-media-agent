@@ -30,16 +30,17 @@ GITHUB_API = "https://api.github.com"
 
 async def scout_node(state: SignalAgentState) -> SignalAgentState:
     """Entry-point node. Discovers new signals and writes them to DB."""
+    brand_id = state.get("brand_id") or settings().default_brand_id
     factory = _session_factory()
     async with factory() as session:
-        signals = await _run_scout(session)
+        signals = await _run_scout(session, brand_id=brand_id)
         await session.commit()
 
-    log.info("scout.done", new_signals=len(signals))
-    return {**state, "signals": signals}
+    log.info("scout.done", new_signals=len(signals), brand_id=brand_id)
+    return {**state, "brand_id": brand_id, "signals": signals}
 
 
-async def _run_scout(session: AsyncSession) -> list[dict]:
+async def _run_scout(session: AsyncSession, brand_id: str) -> list[dict]:
     found: list[dict] = []
 
     repos = settings().github_repo_list
@@ -47,8 +48,8 @@ async def _run_scout(session: AsyncSession) -> list[dict]:
         repos = await _list_org_repos()
 
     for repo in repos:
-        found.extend(await _scout_commits(session, repo))
-        found.extend(await _scout_milestones(session, repo))
+        found.extend(await _scout_commits(session, repo, brand_id=brand_id))
+        found.extend(await _scout_milestones(session, repo, brand_id=brand_id))
 
     return found
 
@@ -77,7 +78,9 @@ async def _list_org_repos() -> list[str]:
     return [r["name"] for r in resp.json() if not r.get("archived")]
 
 
-async def _scout_commits(session: AsyncSession, repo: str) -> list[dict]:
+async def _scout_commits(
+    session: AsyncSession, repo: str, brand_id: str
+) -> list[dict]:
     source_key = f"github:{repo}"
     checkpoint = await session.get(ScoutCheckpoint, source_key)
 
@@ -113,6 +116,7 @@ async def _scout_commits(session: AsyncSession, repo: str) -> list[dict]:
         if score >= NOVELTY_THRESHOLD:
             sig = Signal(
                 id=str(uuid.uuid4()),
+                brand_id=brand_id,
                 source="github",
                 source_ref=sha,
                 summary=summary,
@@ -132,6 +136,7 @@ async def _scout_commits(session: AsyncSession, repo: str) -> list[dict]:
         session.add(
             ScoutCheckpoint(
                 source_key=source_key,
+                brand_id=brand_id,
                 last_checked_at=now,
                 last_ref=commits[0]["sha"] if commits else None,
             )
@@ -140,7 +145,9 @@ async def _scout_commits(session: AsyncSession, repo: str) -> list[dict]:
     return signals
 
 
-async def _scout_milestones(session: AsyncSession, repo: str) -> list[dict]:
+async def _scout_milestones(
+    session: AsyncSession, repo: str, brand_id: str
+) -> list[dict]:
     source_key = f"milestones:{repo}"
     checkpoint = await session.get(ScoutCheckpoint, source_key)
 
@@ -175,7 +182,10 @@ async def _scout_milestones(session: AsyncSession, repo: str) -> list[dict]:
     else:
         session.add(
             ScoutCheckpoint(
-                source_key=source_key, last_checked_at=now, last_ref=current_sha
+                source_key=source_key,
+                brand_id=brand_id,
+                last_checked_at=now,
+                last_ref=current_sha,
             )
         )
 
@@ -184,6 +194,7 @@ async def _scout_milestones(session: AsyncSession, repo: str) -> list[dict]:
 
     sig = Signal(
         id=str(uuid.uuid4()),
+        brand_id=brand_id,
         source="milestones",
         source_ref=f"{repo}:{current_sha[:8]}",
         summary=summary,

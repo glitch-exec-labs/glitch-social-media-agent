@@ -20,6 +20,7 @@ class Signal(SQLModel, table=True):
     __tablename__ = "signal"
 
     id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True, default="glitch_executor")
     source: str                           # github | milestones | trading_metrics
     source_ref: str                       # commit SHA, milestone title, metric snapshot id
     summary: str                          # LLM-generated 1-sentence novelty description
@@ -36,6 +37,7 @@ class ContentScript(SQLModel, table=True):
     __tablename__ = "content_script"
 
     id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True, default="glitch_executor")
     signal_id: str = Field(foreign_key="signal.id", index=True)
     platform: str                         # youtube_shorts | twitter | instagram_reels
     script_body: str
@@ -54,6 +56,7 @@ class VideoJob(SQLModel, table=True):
     __tablename__ = "video_job"
 
     id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True, default="glitch_executor")
     script_id: str = Field(foreign_key="content_script.id", index=True)
     shot_index: int
     model: str                            # kling_2 | runway_gen4 | veo_3 | hailuo | mock
@@ -76,6 +79,7 @@ class VideoAsset(SQLModel, table=True):
     __tablename__ = "video_asset"
 
     id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True, default="glitch_executor")
     script_id: str = Field(foreign_key="content_script.id", unique=True, index=True)
     file_path: str
     duration_s: float
@@ -93,6 +97,7 @@ class ScheduledPost(SQLModel, table=True):
     __tablename__ = "scheduled_post"
 
     id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True, default="glitch_executor")
     asset_id: str = Field(foreign_key="video_asset.id", index=True)
     platform: str
     scheduled_for: datetime
@@ -111,6 +116,7 @@ class PublishedPost(SQLModel, table=True):
     __tablename__ = "published_post"
 
     id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True, default="glitch_executor")
     scheduled_post_id: str = Field(foreign_key="scheduled_post.id", unique=True)
     platform: str
     platform_post_id: str
@@ -126,6 +132,7 @@ class MetricsSnapshot(SQLModel, table=True):
     __tablename__ = "metrics_snapshot"
 
     id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True, default="glitch_executor")
     published_post_id: str = Field(foreign_key="published_post.id", index=True)
     captured_at: datetime = Field(default_factory=datetime.utcnow)
     views: int = 0
@@ -142,6 +149,7 @@ class ScoutCheckpoint(SQLModel, table=True):
     __tablename__ = "scout_checkpoint"
 
     source_key: str = Field(primary_key=True)  # e.g. "github:glitch-cod-confirm"
+    brand_id: str = Field(index=True, default="glitch_executor")
     last_checked_at: datetime = Field(default_factory=datetime.utcnow)
     last_ref: Optional[str] = None             # last commit SHA or MILESTONES SHA
 
@@ -154,6 +162,7 @@ class MentionEvent(SQLModel, table=True):
     __tablename__ = "mention_event"
 
     id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True, default="glitch_executor")
     platform: str                         # twitter | youtube | instagram
     mention_id: str = Field(unique=True, index=True)  # platform-native ID (dedup key)
     body: str
@@ -176,6 +185,7 @@ class OrmResponse(SQLModel, table=True):
     __tablename__ = "orm_response"
 
     id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True, default="glitch_executor")
     mention_id: str = Field(foreign_key="mention_event.id", unique=True, index=True)
     draft_body: str
     status: str = "pending_review"       # pending_review | auto_sent | sent | vetoed | escalated

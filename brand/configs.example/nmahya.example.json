@@ -1,0 +1,51 @@
+{
+  "brand_id": "nmahya",
+  "display_name": "Nmahya Ayurveda",
+  "timezone": "Asia/Kolkata",
+  "content_source": "drive_footage",
+  "brand": {
+    "name": "Nmahya Ayurveda",
+    "accent_color": "#7a5c2e",
+    "base_color": "#1a1208",
+    "watermark_path": null,
+    "voice": "warm, grounded, authentically Ayurvedic — avoid hype and superlatives"
+  },
+  "video_model_routing": {
+    "phase": 1,
+    "model_map": {}
+  },
+  "orm_guardrails": {
+    "hard_stop_phrases": [
+      "allergic reaction",
+      "side effect",
+      "doctor prescribed",
+      "medical advice",
+      "refund",
+      "lawsuit",
+      "legal action"
+    ],
+    "competitor_names": [],
+    "auto_respond_tiers": ["positive", "neutral_faq"],
+    "review_window_seconds": {
+      "negative_mild": 7200
+    },
+    "escalate_tiers": ["negative_severe", "legal_flag"],
+    "ignore_tiers": ["spam"],
+    "min_confidence_threshold": 0.7
+  },
+  "platforms": {
+    "youtube":   {"enabled": false},
+    "twitter":   {"enabled": false},
+    "instagram": {"enabled": false},
+    "tiktok": {
+      "enabled": false,
+      "_comment_enabled": "Flipped to true by PR 3 once OAuth handshake completes and a refresh token lands in platform_auth.",
+      "open_id": null,
+      "daily_cap": 2,
+      "default_privacy_level": "PUBLIC_TO_EVERYONE",
+      "default_tags": ["ayurveda", "ayurvedalife", "nmahya"]
+    }
+  },
+  "default_hashtags": ["#ayurveda", "#ayurvedalife", "#nmahya"],
+  "voice_prompt_path": "brand/prompts/nmahya_voice.md"
+}

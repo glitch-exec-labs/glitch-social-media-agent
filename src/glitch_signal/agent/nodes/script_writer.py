@@ -68,12 +68,19 @@ async def script_writer_node(state: SignalAgentState) -> SignalAgentState:
         if not signal:
             return {**state, "error": f"script_writer: Signal {signal_id} not found"}
 
+        brand_id = (
+            state.get("brand_id")
+            or getattr(signal, "brand_id", None)
+            or settings().default_brand_id
+        )
+
         script_id, script_body, content_type, key_visuals = await _generate_script(
             signal, platform
         )
 
         cs = ContentScript(
             id=script_id,
+            brand_id=brand_id,
             signal_id=signal_id,
             platform=platform,
             script_body=script_body,
@@ -92,11 +99,13 @@ async def script_writer_node(state: SignalAgentState) -> SignalAgentState:
     log.info(
         "script_writer.done",
         script_id=script_id,
+        brand_id=brand_id,
         content_type=content_type,
         n_visuals=len(key_visuals),
     )
     return {
         **state,
+        "brand_id": brand_id,
         "script_id": script_id,
         "script_body": script_body,
         "content_type": content_type,

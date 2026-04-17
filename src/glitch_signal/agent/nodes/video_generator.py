@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import structlog
 
 from glitch_signal.agent.state import SignalAgentState
+from glitch_signal.config import settings
 from glitch_signal.db.models import ContentScript, VideoJob
 from glitch_signal.db.session import _session_factory
 from glitch_signal.video_models.base import VideoGenerationRequest
@@ -22,13 +23,14 @@ log = structlog.get_logger(__name__)
 async def video_generator_node(state: SignalAgentState) -> SignalAgentState:
     script_id = state.get("script_id")
     routed_shots: list[dict] = state.get("routed_shots", [])
+    brand_id = state.get("brand_id") or settings().default_brand_id
 
     if not script_id or not routed_shots:
         return {**state, "error": "video_generator: missing script_id or routed_shots"}
 
     factory = _session_factory()
     async with factory() as session:
-        job_ids = await _dispatch_shots(session, script_id, routed_shots)
+        job_ids = await _dispatch_shots(session, script_id, routed_shots, brand_id=brand_id)
 
         # Mark ContentScript as generating
         cs = await session.get(ContentScript, script_id)
@@ -42,7 +44,7 @@ async def video_generator_node(state: SignalAgentState) -> SignalAgentState:
 
 
 async def _dispatch_shots(
-    session, script_id: str, routed_shots: list[dict]
+    session, script_id: str, routed_shots: list[dict], brand_id: str
 ) -> list[str]:
     job_ids: list[str] = []
 
@@ -62,6 +64,7 @@ async def _dispatch_shots(
 
         job = VideoJob(
             id=str(uuid.uuid4()),
+            brand_id=brand_id,
             script_id=script_id,
             shot_index=i,
             model=model_name,

@@ -74,7 +74,8 @@ async def video_assembler_node(state: SignalAgentState) -> SignalAgentState:
     asset_id = str(uuid.uuid4())
     output_path = assets_dir / f"{asset_id}.mp4"
 
-    _assemble(local_paths, output_path)
+    brand_id = state.get("brand_id") or settings().default_brand_id
+    _assemble(local_paths, output_path, brand_id=brand_id)
 
     # Calculate duration
     try:
@@ -87,6 +88,7 @@ async def video_assembler_node(state: SignalAgentState) -> SignalAgentState:
     async with factory() as session:
         asset = VideoAsset(
             id=asset_id,
+            brand_id=brand_id,
             script_id=script_id,
             file_path=str(output_path),
             duration_s=duration_s,
@@ -110,9 +112,13 @@ async def video_assembler_node(state: SignalAgentState) -> SignalAgentState:
     return {**state, "asset_id": asset_id, "asset_path": str(output_path)}
 
 
-def _assemble(shot_paths: list[pathlib.Path], output: pathlib.Path) -> None:
+def _assemble(
+    shot_paths: list[pathlib.Path],
+    output: pathlib.Path,
+    brand_id: str | None = None,
+) -> None:
     """FFmpeg pipeline: concat → brand overlay → output spec."""
-    bc = brand_config()["brand"]
+    bc = brand_config(brand_id).get("brand", {})
     watermark_path = bc.get("watermark_path", "assets/brand/mascot-128.png")
 
     # Build input streams

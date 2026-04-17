@@ -6,6 +6,9 @@ from typing_extensions import TypedDict
 
 
 class SignalAgentState(TypedDict, total=False):
+    # --- Brand (threaded through every node) ---
+    brand_id: str               # key into settings().brands; defaults to default_brand_id
+
     # --- Input / Scout ---
     signal_id: str
     platform: str               # youtube_shorts | twitter | instagram_reels

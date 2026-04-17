@@ -2,13 +2,23 @@
 
 All settings are loaded from .env (or environment variables).
 Call settings() anywhere — the result is cached after first load.
+
+Brand configs live in brand/configs/<brand_id>.json (gitignored). Each file
+is validated against brand/schema/brand.config.schema.json and merged into
+settings().brands. Legacy brand.config.json at repo root is still honoured
+and registered as the default brand for backward compatibility.
 """
 from __future__ import annotations
 
 import json
+import logging
+import pathlib
 from functools import lru_cache
+from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -64,7 +74,9 @@ class Settings(BaseSettings):
     github_repos: str = ""  # csv of repo names; empty = all org repos
 
     # --- Brand ---
-    brand_config_path: str = "brand.config.json"
+    brand_config_path: str = "brand.config.json"          # legacy single-file (still supported)
+    brand_configs_dir: str = "brand/configs"              # multi-brand dir
+    default_brand_id: str = "glitch_executor"
 
     # --- Retry windows (ms) ---
     publish_retry_1_ms: int = 1_800_000   # 30 min
@@ -97,27 +109,126 @@ def settings() -> Settings:
 
 
 # ---------------------------------------------------------------------------
-# Brand config (loaded once from brand.config.json)
+# Brand config registry — loaded once, keyed by brand_id
 # ---------------------------------------------------------------------------
 
-_brand_config: dict | None = None
+_brand_registry: dict[str, dict] | None = None
 
 
-def brand_config() -> dict:
-    global _brand_config
-    if _brand_config is None:
-        import pathlib
+def _load_brand_registry() -> dict[str, dict]:
+    """Discover and load every brand config file under brand/configs/.
 
-        path = pathlib.Path(settings().brand_config_path)
-        if path.exists():
-            _brand_config = json.loads(path.read_text())
-        else:
-            _brand_config = _default_brand_config()
-    return _brand_config
+    Precedence (highest first):
+      1. Files under brand_configs_dir (one file per brand, stem = brand_id).
+      2. Legacy brand.config.json at repo root, registered as default brand.
+      3. Built-in defaults (glitch_executor only) — tolerated, warned about.
+
+    Each loaded config is normalised to include a 'brand_id' field matching
+    the filename stem. Files whose internal brand_id disagrees with the stem
+    are rejected loudly.
+    """
+    s = settings()
+    registry: dict[str, dict] = {}
+
+    configs_dir = pathlib.Path(s.brand_configs_dir)
+    if configs_dir.is_dir():
+        for path in sorted(configs_dir.glob("*.json")):
+            stem = path.stem
+            if stem.startswith("."):
+                continue
+            try:
+                data = json.loads(path.read_text())
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"Invalid JSON in brand config {path}: {exc}"
+                ) from exc
+
+            internal_id = data.get("brand_id")
+            if internal_id and internal_id != stem:
+                raise RuntimeError(
+                    f"Brand config {path} has brand_id={internal_id!r} "
+                    f"but filename stem is {stem!r}. These must match."
+                )
+            data.setdefault("brand_id", stem)
+            registry[stem] = data
+
+    # Legacy single-file fallback (pre-multi-brand deployments).
+    legacy_path = pathlib.Path(s.brand_config_path)
+    if not registry and legacy_path.exists():
+        try:
+            legacy = json.loads(legacy_path.read_text())
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Invalid JSON in legacy {legacy_path}: {exc}"
+            ) from exc
+        legacy.setdefault("brand_id", s.default_brand_id)
+        legacy.setdefault("display_name", legacy.get("brand", {}).get("name", s.default_brand_id))
+        legacy.setdefault("timezone", "UTC")
+        registry[s.default_brand_id] = legacy
+
+    # Built-in safety net so tests and fresh clones run without setup.
+    if not registry:
+        logger.warning(
+            "No brand configs found at %s/*.json or %s — falling back to "
+            "built-in Glitch Executor defaults. Drop a real config at "
+            "%s/%s.json for production.",
+            s.brand_configs_dir,
+            s.brand_config_path,
+            s.brand_configs_dir,
+            s.default_brand_id,
+        )
+        registry[s.default_brand_id] = _default_brand_config()
+
+    # Default brand must be present.
+    if s.default_brand_id not in registry:
+        raise RuntimeError(
+            f"default_brand_id={s.default_brand_id!r} has no matching config "
+            f"file. Available brands: {sorted(registry.keys())}"
+        )
+
+    return registry
 
 
-def _default_brand_config() -> dict:
+def _brands() -> dict[str, dict]:
+    global _brand_registry
+    if _brand_registry is None:
+        _brand_registry = _load_brand_registry()
+    return _brand_registry
+
+
+def brand_ids() -> list[str]:
+    """All configured brand ids, sorted."""
+    return sorted(_brands().keys())
+
+
+def brand_config(brand_id: str | None = None) -> dict:
+    """Return the config dict for brand_id, or the default brand if None.
+
+    Kept backward-compatible: existing callers that pass no argument still
+    get the same single-brand config they used to read from brand.config.json.
+    """
+    registry = _brands()
+    key = brand_id or settings().default_brand_id
+    if key not in registry:
+        raise KeyError(
+            f"Unknown brand_id {key!r}. Configured brands: {sorted(registry.keys())}"
+        )
+    return registry[key]
+
+
+def _reset_brand_registry_for_tests() -> None:
+    """Test-only: force the registry to be reloaded on next access."""
+    global _brand_registry
+    _brand_registry = None
+
+
+def _default_brand_config() -> dict[str, Any]:
+    s = settings()
     return {
+        "brand_id": s.default_brand_id,
+        "display_name": "Glitch Social Media Agent",
+        "timezone": "UTC",
+        "content_source": "ai_generated",
         "brand": {
             "name": "Glitch Social Media Agent",
             "accent_color": "#00ff88",
@@ -161,9 +272,12 @@ def _default_brand_config() -> dict:
         },
         "platforms": {
             "youtube": {
+                "enabled": True,
                 "privacy_status": "public",
                 "default_tags": ["shorts", "algotrading", "tradingbot", "glitchexecutor"],
                 "category_id": "28",
             }
         },
+        "default_hashtags": [],
+        "voice_prompt_path": None,
     }
