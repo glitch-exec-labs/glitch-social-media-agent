@@ -105,3 +105,30 @@ class TestPublisherRoutesZernio:
         assert post_id == "zernio-stub-id"
         assert url == "https://tiktok.com/@x/video/1"
         assert captured == {"platform": "zernio_tiktok", "brand_id": "nmahya"}
+
+
+class TestSignedMediaUrl:
+    """_build_signed_media_url produces a token verifiable by /media/fetch."""
+
+    def test_token_round_trips(self, tmp_path):
+        from glitch_signal.crypto import verify_state_token
+        from glitch_signal.platforms.zernio import _build_signed_media_url
+
+        p = tmp_path / "clip.mp4"
+        p.write_bytes(b"x")
+        url = _build_signed_media_url(p)
+        assert "/media/fetch?token=" in url
+        token = url.split("token=")[1]
+        payload = verify_state_token(token)
+        assert payload["k"] == "media"
+        assert payload["p"] == str(p.resolve())
+
+    def test_token_different_per_file(self, tmp_path):
+        from glitch_signal.platforms.zernio import _build_signed_media_url
+        a = tmp_path / "a.mp4"
+        a.write_bytes(b"a")
+        b = tmp_path / "b.mp4"
+        b.write_bytes(b"b")
+        ua = _build_signed_media_url(a).split("token=")[1]
+        ub = _build_signed_media_url(b).split("token=")[1]
+        assert ua != ub

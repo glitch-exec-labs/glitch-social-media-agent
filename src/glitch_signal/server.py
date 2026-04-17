@@ -9,15 +9,17 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import pathlib
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlmodel import select
 from telegram import Update
 
 from glitch_signal import __version__
 from glitch_signal.config import brand_ids, settings
+from glitch_signal.crypto import verify_state_token
 from glitch_signal.db.models import ScheduledPost, VideoJob
 from glitch_signal.db.session import _session_factory
 
@@ -267,6 +269,53 @@ async def oauth_tiktok_callback(
             f"(open_id <code>{tokens.get('open_id')}</code>, scopes "
             f"<code>{tokens.get('scope')}</code>). You can close this tab.",
         )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Media-serve — HMAC-signed short-lived URL for vendor fetch
+# ---------------------------------------------------------------------------
+# Used by platforms/zernio.py. The token is an HMAC-signed JSON payload
+# that encodes the exact filesystem path + a 1-hour TTL, so a token
+# issued for file A can't be used to fetch file B, and leaked tokens
+# expire quickly. Only paths under VIDEO_STORAGE_PATH are served — the
+# endpoint refuses absolute paths outside that tree.
+
+_MEDIA_KIND = "media"
+
+
+@app.get("/media/fetch")
+async def media_fetch(token: str) -> FileResponse:
+    try:
+        payload = verify_state_token(token)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=f"Invalid media token: {exc}") from exc
+
+    if payload.get("k") != _MEDIA_KIND:
+        raise HTTPException(status_code=403, detail="Token is not a media token")
+
+    raw_path = payload.get("p")
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="Token missing path")
+
+    # Resolve + confinement check: only paths under VIDEO_STORAGE_PATH are
+    # served. Prevents traversal even if a token is crafted maliciously.
+    path = pathlib.Path(raw_path).resolve()
+    storage_root = pathlib.Path(settings().video_storage_path).resolve()
+    try:
+        path.relative_to(storage_root)
+    except ValueError as exc:
+        log.warning("media.fetch.path_escape_attempt", path=str(path))
+        raise HTTPException(status_code=403, detail="Path outside media root") from exc
+
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Media not found")
+
+    log.info("media.fetch.served", path=str(path), bytes=path.stat().st_size)
+    return FileResponse(
+        path=str(path),
+        media_type="video/mp4",
+        filename=path.name,
     )
 
 

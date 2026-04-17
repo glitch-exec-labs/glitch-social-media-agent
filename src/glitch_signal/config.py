@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     zernio_api_key: str = ""
     zernio_base_url: str = "https://zernio.com/api"
 
+    # --- Media-serve public base URL ---
+    # Zernio fetches videos from this host when posts are published via
+    # the zernio_* publishers. An nginx location block on this hostname
+    # proxies /media/* to the FastAPI app on 127.0.0.1:3111.
+    media_public_base_url: str = "https://grow.glitchexecutor.com"
+
     # --- Retry windows (ms) ---
     publish_retry_1_ms: int = 1_800_000   # 30 min
     publish_retry_2_ms: int = 7_200_000   # 2 h

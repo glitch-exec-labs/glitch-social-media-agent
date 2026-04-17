@@ -5,20 +5,30 @@ apps for TikTok, IG, FB, YT, X, etc. Using Zernio as a thin publish layer
 sidesteps the TikTok-side audit wall that blocks direct-post for unaudited
 first-party apps.
 
-Publish flow:
-  1. zernio.media.upload(path) → hosted CDN URL
-  2. zernio.posts.create(content, platforms=[{platform, accountId}],
-                         media_items=[{type, url}], publish_now=True)
+Upload strategy:
+  Zernio's own direct-upload endpoint is a Vercel serverless function with
+  a ~4.5 MB payload cap, and their upload_large() path requires a caller-
+  provided Vercel Blob token. BUT posts.create() accepts an external URL
+  directly in media_items — Zernio fetches from that URL server-side. So
+  we host the video ourselves via nginx on grow.glitchexecutor.com and
+  hand Zernio an HMAC-signed public URL to it. Skips the 4 MB cap, no
+  Vercel dependency, no extra vendor.
+
+Security model for the public URL:
+  - Path carries a per-file HMAC token signed with AUTH_ENCRYPTION_KEY
+    (already present for Fernet)
+  - URL expires after MEDIA_URL_TTL_S (default 1 hour) — enough time for
+    Zernio to fetch, not long enough to be a long-term leak
+  - The /media/fetch endpoint verifies the HMAC before streaming bytes
 
 Per-brand config lives under platforms.zernio_tiktok (or zernio_<platform>)
 and must carry:
   - enabled: true
-  - account_id: <Zernio internal account id from client.accounts.list()>
+  - account_id: Zernio internal id from client.accounts.list()
 
-The platform string on ScheduledPost rows for this path is "zernio_tiktok"
-so the dispatcher (agent/nodes/publisher.py) can route to us without
-disturbing the direct "tiktok" path that still exists for when our own
-app gets audited.
+The platform string on ScheduledPost rows is "zernio_tiktok" so the
+dispatcher in agent/nodes/publisher.py can route without disturbing the
+direct "tiktok" path.
 
 All live calls gated behind DISPATCH_MODE=dry_run.
 """
@@ -31,6 +41,7 @@ import uuid
 import structlog
 
 from glitch_signal.config import brand_config, settings
+from glitch_signal.crypto import make_state_token
 from glitch_signal.db.models import ContentScript
 from glitch_signal.db.session import _session_factory
 
@@ -44,6 +55,9 @@ _PLATFORM_MAP = {
     "zernio_twitter":   "twitter",
     "zernio_facebook":  "facebook",
 }
+
+# HMAC token TTL for the public media URL we hand Zernio.
+_MEDIA_URL_TTL_S = 60 * 60   # 1 hour — well beyond any realistic fetch window
 
 
 async def publish(
@@ -92,14 +106,25 @@ async def publish(
 
     caption, title, hashtags = await _read_caption(script_id, brand_id, cfg_block)
 
+    # Build a short-lived public URL. Zernio fetches from it server-side,
+    # so we never touch Zernio's 4 MB direct-upload limit or their Vercel
+    # Blob path.
+    media_url = _build_signed_media_url(path)
+    log.info(
+        "zernio.publish.media_url_issued",
+        brand_id=brand_id,
+        file_path=str(path),
+        media_url_host=media_url.split("/")[2] if "://" in media_url else media_url,
+    )
+
     # Zernio SDK is blocking httpx-under-the-hood → run in a thread so we
-    # don't block the scheduler's event loop during large file uploads.
+    # don't block the scheduler's event loop.
     return await asyncio.to_thread(
         _publish_sync,
         api_key=s.zernio_api_key,
         target_platform=target,
         account_id=account_id,
-        file_path=str(path),
+        media_url=media_url,
         caption=caption,
         title=title,
         hashtags=hashtags,
@@ -116,7 +141,7 @@ def _publish_sync(
     api_key: str,
     target_platform: str,
     account_id: str,
-    file_path: str,
+    media_url: str,
     caption: str,
     title: str,
     hashtags: list[str],
@@ -126,23 +151,7 @@ def _publish_sync(
 
     client = zernio.Zernio(api_key=api_key)
 
-    # 1. Upload media to Zernio's CDN.
-    upload = client.media.upload(file_path=file_path)
-    media_url = getattr(upload, "url", None) or getattr(upload, "media_url", None)
-    if not media_url:
-        # Fall back to dict access for SDK versions that return a dict.
-        media_url = upload.model_dump().get("url") if hasattr(upload, "model_dump") else None
-    if not media_url:
-        raise RuntimeError(f"zernio.upload: no URL in response: {upload!r}")
-
-    log.info(
-        "zernio.media.uploaded",
-        target_platform=target_platform,
-        media_url=media_url,
-        file_path=file_path,
-    )
-
-    # 2. Create + publish the post.
+    # No upload step — Zernio fetches from media_url server-side.
     kwargs: dict = dict(
         content=caption,
         platforms=[{"platform": target_platform, "accountId": account_id}],
@@ -177,6 +186,27 @@ def _publish_sync(
 
 
 # ---------------------------------------------------------------------------
+# Signed public-media URL
+# ---------------------------------------------------------------------------
+
+def _build_signed_media_url(local_path: pathlib.Path) -> str:
+    """Return an HMAC-signed public URL that the /media/fetch endpoint accepts.
+
+    The token encodes the exact absolute path so a token issued for file A
+    cannot be used to fetch file B. nginx proxies /media/* on
+    grow.glitchexecutor.com to :3111/media/*, which verifies the token
+    before streaming bytes.
+    """
+    s = settings()
+    token = make_state_token(
+        {"p": str(local_path.resolve()), "k": "media"},
+        ttl_s=_MEDIA_URL_TTL_S,
+    )
+    base = s.media_public_base_url.rstrip("/")
+    return f"{base}/media/fetch?token={token}"
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -196,7 +226,6 @@ async def _read_caption(
         cs = await session.get(ContentScript, script_id) if script_id else None
 
     caption = (cs.script_body if cs else "").strip()
-    # Title fallback: first sentence, capped.
     title = ""
     if caption:
         first = caption.split(".")[0][:100].strip()
@@ -204,13 +233,11 @@ async def _read_caption(
     else:
         title = brand_config(brand_id).get("display_name", brand_id)
 
-    # Hashtags: anything token-like starting with "#" in the caption.
     hashtags: list[str] = []
     for tok in caption.split():
         if tok.startswith("#") and len(tok) > 1:
             hashtags.append(tok[1:].rstrip(".,!?").lower())
     if not hashtags:
-        # Fall back to brand default_tags on the cfg block if present.
         hashtags = [
             t.lstrip("#").strip().lower()
             for t in (cfg_block.get("default_tags") or [])
