@@ -8,8 +8,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from sqlmodel import select
 
@@ -24,10 +23,10 @@ class PlainAuth:
     id: str
     brand_id: str
     platform: str
-    account_identifier: Optional[str]
+    account_identifier: str | None
     access_token: str
-    refresh_token: Optional[str]
-    access_token_expires_at: Optional[datetime]
+    refresh_token: str | None
+    access_token_expires_at: datetime | None
     scopes: list[str]
     status: str
 
@@ -36,18 +35,18 @@ async def upsert(
     *,
     brand_id: str,
     platform: str,
-    account_identifier: Optional[str],
+    account_identifier: str | None,
     access_token: str,
-    refresh_token: Optional[str],
-    access_token_expires_at: Optional[datetime],
+    refresh_token: str | None,
+    access_token_expires_at: datetime | None,
     scopes: list[str],
-    raw_provider_response: Optional[dict] = None,
+    raw_provider_response: dict | None = None,
 ) -> str:
     """Insert or update the row for (brand_id, platform, account_identifier).
 
     Returns the PlatformAuth.id.
     """
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     factory = _session_factory()
     async with factory() as session:
         result = await session.execute(
@@ -90,7 +89,7 @@ async def upsert(
         return row.id
 
 
-async def get(brand_id: str, platform: str) -> Optional[PlainAuth]:
+async def get(brand_id: str, platform: str) -> PlainAuth | None:
     """Return the active auth record for this (brand, platform), decrypted.
 
     If multiple rows exist for different accounts, returns the most recently
@@ -136,6 +135,6 @@ async def mark_needs_reauth(brand_id: str, platform: str) -> None:
         )
         for row in result.scalars().all():
             row.status = "needs_reauth"
-            row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            row.updated_at = datetime.now(UTC).replace(tzinfo=None)
             session.add(row)
         await session.commit()

@@ -8,12 +8,11 @@ from __future__ import annotations
 import base64
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import litellm
 import structlog
-from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from glitch_signal.agent.llm import pick
@@ -122,13 +121,13 @@ async def _scout_commits(
                 summary=summary,
                 novelty_score=score,
                 status="queued",
-                created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                created_at=datetime.now(UTC).replace(tzinfo=None),
             )
             session.add(sig)
             signals.append({"id": sig.id, "summary": sig.summary, "score": score})
 
     # Update checkpoint
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     if checkpoint:
         checkpoint.last_checked_at = now
         checkpoint.last_ref = commits[0]["sha"] if commits else checkpoint.last_ref
@@ -175,7 +174,7 @@ async def _scout_milestones(
         f"[{repo} MILESTONES.md] {excerpt}", source_type="milestones"
     )
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     if checkpoint:
         checkpoint.last_checked_at = now
         checkpoint.last_ref = current_sha

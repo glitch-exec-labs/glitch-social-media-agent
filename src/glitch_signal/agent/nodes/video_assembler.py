@@ -5,10 +5,9 @@ Output spec (all platforms): H.264 (libx264), AAC, 1080x1920, 30fps, CRF 23.
 """
 from __future__ import annotations
 
-import os
 import pathlib
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiofiles
 import ffmpeg
@@ -93,7 +92,7 @@ async def video_assembler_node(state: SignalAgentState) -> SignalAgentState:
             file_path=str(output_path),
             duration_s=duration_s,
             assembler_version=ASSEMBLER_VERSION,
-            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            created_at=datetime.now(UTC).replace(tzinfo=None),
         )
         session.add(asset)
 

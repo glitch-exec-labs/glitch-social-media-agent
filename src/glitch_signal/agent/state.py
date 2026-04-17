@@ -1,7 +1,6 @@
 """LangGraph state schema for the Glitch Social Media Agent video pipeline."""
 from __future__ import annotations
 
-from typing import Optional
 from typing_extensions import TypedDict
 
 
@@ -45,5 +44,5 @@ class SignalAgentState(TypedDict, total=False):
     veto_deadline: str          # ISO datetime string
 
     # --- Error handling ---
-    error: Optional[str]
+    error: str | None
     retry_count: int

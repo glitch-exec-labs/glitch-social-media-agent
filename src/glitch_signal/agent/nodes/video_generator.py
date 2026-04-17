@@ -6,7 +6,7 @@ all shots. The scheduler/queue.py polling loop handles completion.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -72,7 +72,7 @@ async def _dispatch_shots(
             api_job_id=result.api_job_id,
             status="dispatched" if result.status in ("pending", "processing") else result.status,
             cost_usd=result.cost_usd,
-            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            created_at=datetime.now(UTC).replace(tzinfo=None),
             last_error=result.error,
         )
         session.add(job)

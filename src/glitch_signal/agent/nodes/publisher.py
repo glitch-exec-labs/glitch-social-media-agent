@@ -7,7 +7,7 @@ On failure: applies retry backoff (same pattern as cod-confirm handleFailure).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 
@@ -34,7 +34,7 @@ async def publish(scheduled_post_id: str) -> None:
 
         sp.status = "dispatching"
         sp.attempts += 1
-        sp.last_attempt_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        sp.last_attempt_at = datetime.now(UTC).replace(tzinfo=None)
         session.add(sp)
         await session.commit()
 
@@ -62,7 +62,7 @@ async def publish(scheduled_post_id: str) -> None:
             platform=sp.platform if sp else "unknown",
             platform_post_id=platform_post_id,
             platform_url=platform_url,
-            published_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            published_at=datetime.now(UTC).replace(tzinfo=None),
         )
         session.add(pub)
         await session.commit()
@@ -113,7 +113,7 @@ async def _handle_failure(scheduled_post_id: str, error: str) -> None:
 
         sp.last_error = error[:1000]
         s = settings()
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
 
         if sp.attempts == 1:
             delay_ms = s.publish_retry_1_ms

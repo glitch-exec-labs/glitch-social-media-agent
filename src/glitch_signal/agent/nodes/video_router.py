@@ -5,8 +5,6 @@ without a code deploy. Phase 1: all hints map to kling_2.
 """
 from __future__ import annotations
 
-import json
-
 import structlog
 
 from glitch_signal.agent.state import SignalAgentState

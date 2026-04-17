@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import pathlib
-from typing import Optional
 
 import structlog
 
@@ -30,11 +29,9 @@ async def upload_short(
     brand_id: str | None = None,
 ) -> tuple[str, str | None]:
     """Upload a video as a YouTube Short. Returns (video_id, video_url)."""
+    import google.auth.transport.requests
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from google.oauth2.credentials import Credentials
-    import google.auth.transport.requests
 
     creds = _load_credentials()
     if not creds:

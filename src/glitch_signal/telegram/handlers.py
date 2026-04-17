@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import pathlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 from sqlmodel import select
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from glitch_signal.config import brand_config, brand_ids, settings
@@ -280,7 +279,7 @@ async def _approve_scheduled_post(sp_id: str, update, query=None) -> None:
             text = f"Post {sp_id[:8]} is already {sp.status}."
         else:
             sp.status = "queued"
-            sp.scheduled_for = datetime.now(timezone.utc).replace(tzinfo=None)
+            sp.scheduled_for = datetime.now(UTC).replace(tzinfo=None)
             session.add(sp)
             await session.commit()
             text = f"Post {sp_id[:8]} approved — queued for immediate publish."

@@ -15,10 +15,8 @@ swap the init endpoint to /v2/post/publish/inbox/video/init/.
 from __future__ import annotations
 
 import asyncio
-import json
 import pathlib
 import uuid
-from typing import Optional
 
 import httpx
 import structlog
@@ -40,7 +38,7 @@ _MIN_CHUNK_SIZE = 5 * 1024 * 1024
 async def publish(
     file_path: str,
     script_id: str,
-    brand_id: Optional[str] = None,
+    brand_id: str | None = None,
 ) -> tuple[str, str | None]:
     """Publish a video to TikTok. Returns (publish_id, share_url|None)."""
     s = settings()
@@ -201,7 +199,7 @@ async def _upload_file(upload_url: str, path: pathlib.Path, file_size: int) -> N
                 offset += len(chunk)
 
 
-async def _poll_until_published(access_token: str, publish_id: str) -> Optional[str]:
+async def _poll_until_published(access_token: str, publish_id: str) -> str | None:
     s = settings()
     deadline_s = s.tiktok_post_status_timeout_s
     elapsed = 0

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pathlib
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 from sqlmodel import select
@@ -99,7 +99,7 @@ async def drive_scout_node(state: SignalAgentState) -> SignalAgentState:
                 summary=f"Drive clip: {f.name}",
                 novelty_score=1.0,   # drive clips are always "keep" — no scoring phase
                 status="queued",
-                created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                created_at=datetime.now(UTC).replace(tzinfo=None),
             )
             session.add(sig)
             new_signals.append({

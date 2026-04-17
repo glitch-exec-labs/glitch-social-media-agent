@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import os
-import pathlib
-from unittest.mock import patch
+from datetime import UTC
 
 import pytest
 
@@ -186,7 +185,8 @@ class TestCaptionWriterNode:
 
         # Seed a Signal row to caption.
         import uuid
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         from glitch_signal.db.models import Signal
 
         sig_id = str(uuid.uuid4())
@@ -199,7 +199,7 @@ class TestCaptionWriterNode:
                 summary="Drive clip: clip_a.mp4",
                 novelty_score=1.0,
                 status="queued",
-                created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                created_at=datetime.now(UTC).replace(tzinfo=None),
             ))
             await session.commit()
 
@@ -223,6 +223,7 @@ class TestCaptionWriterNode:
 
         # Confirm both rows landed with the right brand_id
         from sqlmodel import select
+
         from glitch_signal.db.models import ContentScript, VideoAsset
         async with factory() as session:
             cs_rows = (await session.execute(select(ContentScript))).scalars().all()
@@ -271,10 +272,10 @@ async def _make_memory_db(monkeypatch=None):
     from sqlmodel import SQLModel
     from sqlmodel.ext.asyncio.session import AsyncSession
 
+    import glitch_signal.agent.nodes.caption_writer as cw_mod
+    import glitch_signal.agent.nodes.drive_scout as ds_mod
     import glitch_signal.db.models  # noqa: F401 — register metadata
     import glitch_signal.db.session as dbs
-    import glitch_signal.agent.nodes.drive_scout as ds_mod
-    import glitch_signal.agent.nodes.caption_writer as cw_mod
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:

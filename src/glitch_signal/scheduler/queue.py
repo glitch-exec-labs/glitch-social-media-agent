@@ -14,7 +14,7 @@ DISPATCH_MODE=dry_run: all ticks log intent but make no external calls.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from sqlmodel import select
@@ -22,7 +22,6 @@ from sqlmodel import select
 from glitch_signal.config import settings
 from glitch_signal.db.models import (
     ContentScript,
-    MentionEvent,
     OrmResponse,
     ScheduledPost,
     VideoJob,
@@ -106,13 +105,13 @@ async def _dispatch_video_jobs() -> None:
                 if result_obj.status == "done":
                     j.status = "done"
                     j.video_url = result_obj.video_url
-                    j.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                    j.completed_at = datetime.now(UTC).replace(tzinfo=None)
                     if result_obj.cost_usd:
                         j.cost_usd = result_obj.cost_usd
                 elif result_obj.status == "failed":
                     j.status = "failed"
                     j.last_error = result_obj.error or "model reported failure"
-                    j.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                    j.completed_at = datetime.now(UTC).replace(tzinfo=None)
                 else:
                     j.status = "dispatched"  # still processing
                 session.add(j)
@@ -184,7 +183,7 @@ async def _trigger_assembler(script_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def _promote_veto_windows() -> None:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     factory = _session_factory()
     async with factory() as session:
         result = await session.execute(
@@ -207,7 +206,7 @@ async def _promote_veto_windows() -> None:
 # ---------------------------------------------------------------------------
 
 async def _dispatch_scheduled_posts() -> None:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
 
     factory = _session_factory()
     async with factory() as session:
@@ -249,7 +248,7 @@ async def _dispatch_scheduled_posts() -> None:
 # ---------------------------------------------------------------------------
 
 async def _send_orm_auto_responses() -> None:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     factory = _session_factory()
     async with factory() as session:
         result = await session.execute(
@@ -278,7 +277,7 @@ async def _send_orm_auto_responses() -> None:
 
 async def _sweep_stuck() -> None:
     stuck_after_s = settings().scheduler_stuck_after_ms / 1000
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=stuck_after_s)
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=stuck_after_s)
 
     factory = _session_factory()
     async with factory() as session:
@@ -292,7 +291,7 @@ async def _sweep_stuck() -> None:
 
         for sp in stuck:
             log.warning("scheduler.stuck_job", scheduled_post_id=sp.id, attempts=sp.attempts)
-            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            now = datetime.now(UTC).replace(tzinfo=None)
             s = settings()
 
             if sp.attempts >= 3:

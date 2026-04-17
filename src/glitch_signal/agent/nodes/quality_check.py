@@ -13,7 +13,6 @@ import tempfile
 import ffmpeg
 import litellm
 import structlog
-from sqlmodel import select
 
 from glitch_signal.agent.llm import pick
 from glitch_signal.agent.state import SignalAgentState

@@ -4,8 +4,6 @@ Mirrors glitch-grow-ads-agent/src/ads_agent/telegram/bot.py pattern.
 """
 from __future__ import annotations
 
-from functools import lru_cache
-
 from telegram.ext import (
     Application,
     CallbackQueryHandler,

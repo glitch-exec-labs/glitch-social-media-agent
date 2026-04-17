@@ -3,15 +3,14 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import litellm
 import structlog
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from glitch_signal.agent.llm import pick
 from glitch_signal.agent.state import SignalAgentState
-from glitch_signal.config import brand_config, settings
+from glitch_signal.config import settings
 from glitch_signal.db.models import ContentScript, Signal
 from glitch_signal.db.session import _session_factory
 
@@ -88,7 +87,7 @@ async def script_writer_node(state: SignalAgentState) -> SignalAgentState:
             key_visuals=json.dumps(key_visuals),
             shots="[]",
             status="draft",
-            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            created_at=datetime.now(UTC).replace(tzinfo=None),
         )
         session.add(cs)
 

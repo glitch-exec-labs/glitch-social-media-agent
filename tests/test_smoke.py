@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC
 
 import pytest
 
@@ -106,8 +107,8 @@ class TestVideoRouter:
 class TestKlingMock:
     @pytest.mark.asyncio
     async def test_generate_dry_run(self):
-        from glitch_signal.video_models.kling import KlingModel
         from glitch_signal.video_models.base import VideoGenerationRequest
+        from glitch_signal.video_models.kling import KlingModel
 
         model = KlingModel()
         req = VideoGenerationRequest(prompt="cobra in neon city", duration_s=5)
@@ -140,11 +141,11 @@ class TestKlingMock:
 class TestSchedulerVetoPromotion:
     @pytest.mark.asyncio
     async def test_veto_deadline_promotes_to_queued(self):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        from sqlmodel import SQLModel
         from sqlalchemy.ext.asyncio import create_async_engine
         from sqlalchemy.orm import sessionmaker
+        from sqlmodel import SQLModel
         from sqlmodel.ext.asyncio.session import AsyncSession
 
         # In-memory DB for this test
@@ -155,9 +156,9 @@ class TestSchedulerVetoPromotion:
         factory = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
         # Create an expired pending_veto post
-        from glitch_signal.db.models import VideoAsset, ScheduledPost
+        from glitch_signal.db.models import ScheduledPost, VideoAsset
 
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
         past = now - timedelta(seconds=1)
 
         asset_id = str(uuid.uuid4())
@@ -184,21 +185,26 @@ class TestSchedulerVetoPromotion:
             session.add(sp)
             await session.commit()
 
-        # Patch session factory to use our in-memory DB
-        import glitch_signal.scheduler.queue as q
+        # Patch session factory in EVERY module that imported it as a bare
+        # name at load time. Bindings are per-module in Python, so patching
+        # db.session alone doesn't reach the scheduler's copy.
         import glitch_signal.db.session as db_session
-
-        original_factory = db_session._session_factory
+        import glitch_signal.scheduler.queue as q
 
         def patched_factory():
             return factory
 
-        db_session._session_factory = patched_factory
+        originals: dict = {}
+        for mod in (db_session, q):
+            if hasattr(mod, "_session_factory"):
+                originals[mod] = mod._session_factory
+                mod._session_factory = patched_factory
 
         try:
             await q._promote_veto_windows()
         finally:
-            db_session._session_factory = original_factory
+            for mod, orig in originals.items():
+                mod._session_factory = orig
 
         async with factory() as session:
             from sqlmodel import select
@@ -232,18 +238,28 @@ class TestClassifierDryRun:
 class TestServerHealth:
     @pytest.mark.asyncio
     async def test_healthz_returns_ok(self):
-        """Test healthz endpoint structure (no real DB connection)."""
-        from unittest.mock import AsyncMock, patch
+        """Test healthz endpoint structure using in-memory SQLite."""
+        from sqlalchemy.ext.asyncio import create_async_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlmodel import SQLModel
+        from sqlmodel.ext.asyncio.session import AsyncSession
 
-        with patch("glitch_signal.server._session_factory") as mock_factory:
-            mock_session = AsyncMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-            mock_session.execute = AsyncMock(return_value=AsyncMock(scalars=lambda: AsyncMock(all=lambda: [])))
-            mock_factory.return_value = mock_session
+        import glitch_signal.db.models  # noqa: F401 — register metadata
+        import glitch_signal.server as srv
 
-            from glitch_signal.server import healthz
-            result = await healthz()
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        factory = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+        # healthz calls _session_factory() and expects it to return a sessionmaker
+        # that can be called to get a session context manager.
+        original = srv._session_factory
+        srv._session_factory = lambda: factory
+        try:
+            result = await srv.healthz()
+        finally:
+            srv._session_factory = original
 
         assert result["status"] == "ok"
         assert result["service"] == "glitch-signal"

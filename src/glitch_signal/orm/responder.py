@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import litellm
 import structlog
@@ -61,7 +61,7 @@ async def process_mention(mention_id: str) -> None:
 
         # Never respond to guardrail hits
         if event.guardrail_hit:
-            event.processed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            event.processed_at = datetime.now(UTC).replace(tzinfo=None)
             session.add(event)
             await session.commit()
             return
@@ -145,11 +145,14 @@ async def _generate_github_response(event: MentionEvent) -> str:
             max_tokens=200,
             **mc.kwargs,
         )
-        data = json.loads(resp.choices[0].message.content or "{}")
-        title = data.get("title", "User report")
-        body = data.get("body", event.body)
-        # Would create GitHub issue here in full implementation
-        # For now, return a canned response pointing to GitHub
+        # TODO(phase2): create a real GitHub issue with these fields.
+        # For now we only log the LLM output and return a canned response.
+        _data = json.loads(resp.choices[0].message.content or "{}")
+        log.info(
+            "responder.github_issue_stub",
+            title=_data.get("title", "User report")[:80],
+            body_preview=str(_data.get("body", event.body))[:80],
+        )
         return f"Thanks for the report. Filed as a GitHub issue: {GLITCH_DOCS} — we'll follow up there."
     except Exception:
         return f"Thanks for the report. Please open an issue at {GLITCH_DOCS} so we can track it."
@@ -173,9 +176,9 @@ async def _send_response(event: MentionEvent, draft: str, sent_by: str) -> None:
             mention_id=event.id,
             draft_body=draft,
             status="auto_sent" if sent_by == "auto" else "sent",
-            sent_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            sent_at=datetime.now(UTC).replace(tzinfo=None),
             sent_by=sent_by,
-            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            created_at=datetime.now(UTC).replace(tzinfo=None),
         )
         session.add(orm_resp)
         await session.commit()
@@ -184,7 +187,7 @@ async def _send_response(event: MentionEvent, draft: str, sent_by: str) -> None:
 
 
 async def _queue_for_review(event: MentionEvent, draft: str, review_s: int) -> None:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     auto_send_at = now + timedelta(seconds=review_s)
 
     factory = _session_factory()
@@ -223,7 +226,7 @@ async def _escalate(event: MentionEvent) -> None:
             mention_id=event.id,
             draft_body="",
             status="escalated",
-            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            created_at=datetime.now(UTC).replace(tzinfo=None),
         )
         session.add(orm_resp)
         await session.commit()
@@ -276,11 +279,13 @@ async def _post_reply(event: MentionEvent, draft: str) -> None:
 
 
 async def _post_twitter_reply(in_reply_to_id: str, text: str) -> None:
-    import httpx
-    bearer = settings().twitter_bearer_token
-    # OAuth 1.0a required for write — Phase 2 uses tweepy
-    # Stub: log the intent
-    log.info("responder.twitter_reply_stub", in_reply_to_id=in_reply_to_id, text=text[:50])
+    # OAuth 1.0a required for write — Phase 2 uses tweepy. For now we only
+    # log the intent; the bearer token alone can't authorise write calls.
+    log.info(
+        "responder.twitter_reply_stub",
+        in_reply_to_id=in_reply_to_id,
+        text=text[:50],
+    )
 
 
 async def _mark_processed(mention_id: str) -> None:
@@ -293,7 +298,7 @@ async def _mark_processed(mention_id: str) -> None:
         )
         event = result.scalar_one_or_none()
         if event:
-            event.processed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            event.processed_at = datetime.now(UTC).replace(tzinfo=None)
             session.add(event)
             await session.commit()
 
