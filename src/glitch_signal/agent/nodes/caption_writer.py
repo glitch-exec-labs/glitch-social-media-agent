@@ -143,18 +143,18 @@ async def _generate_caption(
     voice = _load_voice(cfg) or _DEFAULT_VOICE
     default_hashtags: list[str] = cfg.get("default_hashtags") or []
 
-    if settings().is_dry_run:
-        fallback_caption = (
-            f"[dry-run] {display_name}: {signal.summary}"
-            + ("\n\n" + " ".join(default_hashtags) if default_hashtags else "")
-        )
-        return (
-            f"[dry-run] {signal.summary[:80]}",
-            fallback_caption,
-            [h.lstrip("#") for h in default_hashtags],
-        )
-
-    mc = pick("smart")
+    # DISPATCH_MODE gates PUBLISH actions (posting to TikTok, sending emails,
+    # etc.), NOT every LLM call. Caption generation is cheap, text-only,
+    # and exactly what the operator needs to review during dry-run —
+    # skipping it leaves them previewing template fallback captions that
+    # don't reflect the real system behaviour.
+    #
+    # The previous implementation hard-coded tier="smart" (Claude Sonnet)
+    # which requires an Anthropic key. For caption writing the cost/quality
+    # trade-off doesn't justify Sonnet — tier="cheap" (Gemini Flash) is
+    # the right default since we always have a Google key for the Scout
+    # novelty scorer anyway.
+    mc = pick("cheap")
     system_prompt = _SYSTEM_TEMPLATE.format(display_name=display_name, voice=voice)
     user_msg = (
         f"Platform: {platform}\n"

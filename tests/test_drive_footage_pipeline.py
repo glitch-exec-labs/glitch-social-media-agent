@@ -159,12 +159,13 @@ class TestDriveScoutNode:
 
 
 # ---------------------------------------------------------------------------
-# caption_writer — dry-run short-circuit + DB writes
+# caption_writer — writes ContentScript + VideoAsset regardless of DISPATCH_MODE.
+# The LLM call itself is mocked here so we don't hit the wire.
 # ---------------------------------------------------------------------------
 
 class TestCaptionWriterNode:
     @pytest.mark.asyncio
-    async def test_dry_run_writes_content_script_and_asset(self, tmp_path, monkeypatch):
+    async def test_writes_content_script_and_asset(self, tmp_path, monkeypatch):
         configs = tmp_path / "configs"
         configs.mkdir()
         (configs / "nmahya.json").write_text(_minimal_brand_json(
@@ -208,18 +209,25 @@ class TestCaptionWriterNode:
         local.parent.mkdir(parents=True, exist_ok=True)
         local.write_bytes(b"mock")
 
+        # Mock the LLM call so caption_writer doesn't try to hit Gemini.
+        from unittest.mock import AsyncMock, patch
+        mock_resp = type("R", (), {"choices": [type("C", (), {"message": type("M", (), {"content": '{"title": "Golden hour root", "caption": "A moment with the root.\\n\\n#ayurveda #nmahya", "hashtags": ["ayurveda", "nmahya"]}'})()})()]})()
+
         from glitch_signal.agent.nodes.caption_writer import caption_writer_node
-        state = await caption_writer_node({
-            "brand_id": "nmahya",
-            "signal_id": sig_id,
-            "platform": "tiktok",
-            "signals": [{"id": sig_id, "local_path": str(local)}],
-        })
+        with patch("glitch_signal.agent.nodes.caption_writer.litellm.acompletion", new=AsyncMock(return_value=mock_resp)):
+            state = await caption_writer_node({
+                "brand_id": "nmahya",
+                "signal_id": sig_id,
+                "platform": "tiktok",
+                "signals": [{"id": sig_id, "local_path": str(local)}],
+            })
 
         assert state.get("error") is None, state.get("error")
         assert state["script_id"]
         assert state["asset_id"]
-        assert "[dry-run]" in state["script_body"]
+        # LLM output flows through, not a dry-run fallback.
+        assert "A moment with the root." in state["script_body"]
+        assert "#ayurveda" in state["script_body"]
 
         # Confirm both rows landed with the right brand_id
         from sqlmodel import select
