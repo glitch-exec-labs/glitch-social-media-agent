@@ -68,6 +68,11 @@ dependencies = [
   # Zernio — audited multi-platform social-posting vendor used when our
   # own per-platform dev apps are unaudited (TikTok today).
   "zernio-sdk>=1.3",
+
+  # Upload-Post — alternative audited vendor. Cheaper at real volume and
+  # with a richer API surface (analytics, comments, scheduled-post mgmt,
+  # webhooks). Lives alongside Zernio, not a replacement.
+  "upload-post>=2.1",
 ]
 
 [project.optional-dependencies]

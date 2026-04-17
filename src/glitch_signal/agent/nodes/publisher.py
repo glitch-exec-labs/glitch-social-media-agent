@@ -97,6 +97,10 @@ async def _publish_to_platform(
         from glitch_signal.platforms.zernio import publish as zernio_publish
         return await zernio_publish(platform, file_path, script_id, brand_id=brand_id)
 
+    if platform.startswith("upload_post_"):
+        from glitch_signal.platforms.upload_post import publish as upload_post_publish
+        return await upload_post_publish(platform, file_path, script_id, brand_id=brand_id)
+
     if platform == "twitter":
         from glitch_signal.platforms.twitter import post_video
         return await post_video(file_path, script_id)
