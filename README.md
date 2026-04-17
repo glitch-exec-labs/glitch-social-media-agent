@@ -207,6 +207,58 @@ no redeploy beyond config.
 
 ---
 
+## TikTok Content Posting API
+
+TikTok publishing uses the official Content Posting API. OAuth tokens are
+stored encrypted at rest (Fernet, key = `AUTH_ENCRYPTION_KEY`) in the
+`platform_auth` table.
+
+### Setup (once per brand)
+
+1. Register the app at <https://developers.tiktok.com>. Add redirect URI:
+   `https://grow.glitchexecutor.com/oauth/tiktok/callback` (must match
+   `TIKTOK_REDIRECT_URI` exactly).
+2. Fill `.env`:
+   ```
+   TIKTOK_CLIENT_KEY=<from dev portal>
+   TIKTOK_CLIENT_SECRET=<from dev portal>
+   AUTH_ENCRYPTION_KEY=<python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
+   ```
+3. Set `platforms.tiktok.enabled = true` in `brand/configs/<brand_id>.json`.
+4. Visit `https://grow.glitchexecutor.com/oauth/tiktok/start?brand=<brand_id>`
+   in a browser signed into the target TikTok account. After approval you
+   land on a "TikTok connected" page and a row is written to `platform_auth`.
+
+### Nginx proxy on `grow.glitchexecutor.com`
+
+The OAuth callback is registered on `grow.glitchexecutor.com` but served by
+this service on port 3111. Add one `location` block to the nginx config for
+that host:
+
+```nginx
+location /oauth/tiktok/ {
+    proxy_pass http://<signal-host>:3111;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+}
+```
+
+`<signal-host>` is whichever internal address resolves to this service
+(localhost if co-located, otherwise the signal box's private IP).
+
+### Required scopes
+
+- `user.info.basic` — always granted
+- `video.upload` — upload to creator inbox (manual tap to publish)
+- `video.publish` — direct post (auto-publish) — **the one this repo uses**
+
+If only `video.upload` is approved, swap `platforms/tiktok.py::_INIT_PATH`
+to `/v2/post/publish/inbox/video/init/` — everything else is identical and
+the creator will tap Post in the TikTok app.
+
+---
+
 ## ORM guardrails
 
 Hard-stop phrases trigger an **immediate Telegram alert and zero automated response** — no LLM involved, pure rule engine:

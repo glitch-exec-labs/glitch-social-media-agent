@@ -61,6 +61,7 @@ dependencies = [
   "structlog>=24.4",
   "tenacity>=9.0",
   "aiofiles>=24.1",
+  "cryptography>=43.0",
 ]
 
 [project.optional-dependencies]

@@ -178,6 +178,31 @@ class MentionEvent(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
+# PlatformAuth — OAuth tokens per (brand_id, platform, account_identifier)
+# ---------------------------------------------------------------------------
+
+class PlatformAuth(SQLModel, table=True):
+    """OAuth tokens stored encrypted at rest via Fernet (AUTH_ENCRYPTION_KEY).
+
+    Never read the _enc columns directly — go through glitch_signal.oauth.storage.
+    """
+    __tablename__ = "platform_auth"
+
+    id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True)
+    platform: str = Field(index=True)                # tiktok | youtube | twitter | instagram
+    account_identifier: Optional[str] = Field(default=None, index=True)
+    access_token_enc: str                            # Fernet ciphertext
+    refresh_token_enc: Optional[str] = None
+    access_token_expires_at: Optional[datetime] = None
+    scopes: str = "[]"                               # JSON list[str]
+    status: str = "active"                           # active | needs_reauth | revoked
+    raw_provider_response: str = "{}"                # raw provider JSON for debugging
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
 # OrmResponse — generated / sent response record
 # ---------------------------------------------------------------------------
 

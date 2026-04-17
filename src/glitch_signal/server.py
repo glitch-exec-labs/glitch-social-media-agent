@@ -13,11 +13,12 @@ import json
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlmodel import select
 from telegram import Update
 
 from glitch_signal import __version__
-from glitch_signal.config import settings
+from glitch_signal.config import brand_ids, settings
 from glitch_signal.db.models import ScheduledPost, Signal, VideoJob
 from glitch_signal.db.session import _session_factory
 
@@ -139,3 +140,101 @@ async def telegram_webhook(request: Request) -> Response:
     update = Update.de_json(data, _tg_app.bot)
     await _tg_app.process_update(update)
     return Response(status_code=200)
+
+
+# ---------------------------------------------------------------------------
+# OAuth — TikTok Content Posting API
+# ---------------------------------------------------------------------------
+# These routes are exposed at grow.glitchexecutor.com/oauth/tiktok/* via the
+# nginx proxy config on that host (see README). The redirect_uri registered
+# on the TikTok developer app must point at /oauth/tiktok/callback on this
+# same host.
+
+@app.get("/oauth/tiktok/start")
+async def oauth_tiktok_start(brand: str) -> RedirectResponse:
+    if brand not in brand_ids():
+        raise HTTPException(status_code=400, detail=f"Unknown brand: {brand!r}")
+
+    from glitch_signal.oauth.tiktok import build_authorize_url
+    try:
+        url = build_authorize_url(brand)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    log.info("oauth.tiktok.start", brand=brand)
+    return RedirectResponse(url=url, status_code=302)
+
+
+@app.get("/oauth/tiktok/callback")
+async def oauth_tiktok_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+) -> HTMLResponse:
+    if error:
+        log.warning("oauth.tiktok.callback_error", error=error, desc=error_description)
+        return HTMLResponse(
+            _html_page(
+                "TikTok authorization cancelled",
+                f"Provider returned error: <code>{error}</code><br>"
+                f"{error_description or ''}",
+            ),
+            status_code=400,
+        )
+
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state")
+
+    from glitch_signal.oauth import tiktok as tiktok_oauth
+
+    try:
+        brand_id = tiktok_oauth.parse_state(state)
+    except ValueError as exc:
+        log.warning("oauth.tiktok.bad_state", error=str(exc))
+        raise HTTPException(status_code=400, detail=f"Invalid state: {exc}")
+
+    if brand_id not in brand_ids():
+        raise HTTPException(status_code=400, detail=f"Unknown brand: {brand_id!r}")
+
+    try:
+        tokens = await tiktok_oauth.exchange_code_for_tokens(code)
+        row_id = await tiktok_oauth.persist_tokens(brand_id, tokens)
+    except Exception as exc:
+        log.exception("oauth.tiktok.exchange_failed", brand=brand_id)
+        return HTMLResponse(
+            _html_page(
+                "TikTok connection failed",
+                f"Token exchange failed: <code>{exc}</code>",
+            ),
+            status_code=502,
+        )
+
+    log.info(
+        "oauth.tiktok.connected",
+        brand=brand_id,
+        open_id=tokens.get("open_id"),
+        scopes=tokens.get("scope"),
+        platform_auth_id=row_id,
+    )
+    return HTMLResponse(
+        _html_page(
+            "TikTok connected",
+            f"Brand <code>{brand_id}</code> is now connected to TikTok "
+            f"(open_id <code>{tokens.get('open_id')}</code>, scopes "
+            f"<code>{tokens.get('scope')}</code>). You can close this tab.",
+        )
+    )
+
+
+def _html_page(title: str, body_html: str) -> str:
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<title>{title}</title>"
+        "<style>body{font-family:ui-sans-serif,system-ui;background:#0a0a0f;color:#e6e6e6;"
+        "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}"
+        ".card{max-width:560px;padding:32px;border:1px solid #222;border-radius:12px;"
+        "background:#111}h1{margin:0 0 12px;font-size:18px;color:#00ff88}"
+        "code{background:#222;padding:2px 6px;border-radius:4px}</style>"
+        f"</head><body><div class=\"card\"><h1>{title}</h1><p>{body_html}</p></div></body></html>"
+    )

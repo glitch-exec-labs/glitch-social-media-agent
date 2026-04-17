@@ -78,7 +78,24 @@
         },
         "twitter":   {"type": "object", "additionalProperties": true},
         "instagram": {"type": "object", "additionalProperties": true},
-        "tiktok":    {"type": "object", "additionalProperties": true}
+        "tiktok": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "open_id": {"type": ["string", "null"]},
+            "daily_cap": {"type": "integer", "minimum": 0},
+            "default_privacy_level": {
+              "type": "string",
+              "enum": ["PUBLIC_TO_EVERYONE", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "SELF_ONLY"]
+            },
+            "disable_duet": {"type": "boolean"},
+            "disable_stitch": {"type": "boolean"},
+            "disable_comment": {"type": "boolean"},
+            "video_cover_timestamp_ms": {"type": "integer", "minimum": 0},
+            "default_tags": {"type": "array", "items": {"type": "string"}}
+          }
+        }
       }
     },
     "default_hashtags": {
