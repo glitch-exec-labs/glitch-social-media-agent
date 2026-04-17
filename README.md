@@ -415,6 +415,34 @@ The URL path segment IS the secret (Upload-Post does not sign webhook bodies). I
 
 ---
 
+## Pre-publish ffmpeg transforms
+
+Brands can declare per-platform ffmpeg transforms that run locally before
+the publisher hands the file off to the vendor. Zero cost (local ffmpeg,
+no vendor quota), cached by output filename so rerunning the pipeline is
+a no-op.
+
+Add a `media_pipeline` block to `brand/configs/<brand_id>.json`, keyed on
+canonical platform name (`tiktok`, `instagram`, `youtube`, …) — the same
+transform applies whether the brand posts via `upload_post_tiktok`,
+`zernio_tiktok`, or direct `tiktok`:
+
+```json
+"media_pipeline": {
+  "tiktok": ["strip_audio"]
+}
+```
+
+Transforms available today:
+
+- **`strip_audio`** — `-c:v copy -an` remux. Drops the audio track.
+  Used for Namhya (source Drive footage carries licensed music, which
+  triggers TikTok's web-player mute on Content-ID match — a silent
+  upload plays fine on web and on the app).
+
+Add a transform: register a builder in `src/glitch_signal/media/ffmpeg.py`
+and list its name in the schema enum under `brand/schema/brand.config.schema.json`.
+
 ## ORM guardrails
 
 Hard-stop phrases trigger an **immediate Telegram alert and zero automated response** — no LLM involved, pure rule engine:

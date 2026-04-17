@@ -63,9 +63,16 @@ async def publish(scheduled_post_id: str) -> None:
 
     try:
         brand_id = getattr(sp, "brand_id", None) or getattr(asset, "brand_id", None)
+        # Pre-publish ffmpeg transforms (brand-config driven). Returns the
+        # original path unchanged for brands with no `media_pipeline`
+        # entry for this platform — zero cost on the common path.
+        from glitch_signal.media.ffmpeg import apply_transforms
+        publish_file_path = await apply_transforms(
+            asset.file_path, brand_id or "", sp.platform
+        )
         platform_post_id, platform_url = await _publish_to_platform(
             sp.platform,
-            asset.file_path,
+            publish_file_path,
             asset.script_id,
             brand_id=brand_id,
             attempts=attempts_before_call,

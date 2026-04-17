@@ -50,6 +50,9 @@
       "default_tags": ["tag1", "tag2", "tag3"]
     }
   },
+  "media_pipeline": {
+    "tiktok": ["strip_audio"]
+  },
   "default_hashtags": ["#tag1", "#tag2", "#tag3"],
   "voice_prompt_path": "brand/prompts/drive_footage_brand_voice.md"
 }

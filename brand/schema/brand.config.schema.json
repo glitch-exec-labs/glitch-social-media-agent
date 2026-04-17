@@ -170,6 +170,18 @@
         }
       }
     },
+    "media_pipeline": {
+      "type": "object",
+      "description": "Per-platform pre-publish ffmpeg transforms. Keys are canonical platform names (tiktok, instagram, youtube, etc. — same enum as Upload-Post). Values are ordered lists of transform names from src/glitch_signal/media/ffmpeg.py::registered_transforms(). Example: {\"tiktok\": [\"strip_audio\"]} to drop the audio track before TikTok publish (fixes the web-player mute on licensed-music Content ID matches).",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["strip_audio"]
+        },
+        "description": "Ordered transform chain — outputs of step N feed step N+1. Each result is cached next to the source file so rerunning the pipeline is a no-op."
+      }
+    },
     "default_hashtags": {
       "type": "array",
       "items": {"type": "string"},
