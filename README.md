@@ -391,6 +391,7 @@ Security properties:
 
 ---
 
+<<<<<<< HEAD
 ## Upload-Post webhooks
 
 The Upload-Post publisher hands the video to the vendor and returns immediately — it no longer blocks on `get_status`. Finalization (writing `PublishedPost`, flipping `scheduled_post.status` to `done`) happens when Upload-Post POSTs the `upload_completed` event to our `/webhooks/upload_post/<secret>` endpoint.
@@ -462,6 +463,30 @@ of which platform posted (TikTok uses `play_count`, YouTube uses
 
 Zernio-backed and direct-TikTok posts aren't swept yet; their analytics
 modules are a future addition.
+
+---
+
+## Onboarding new brands via Upload-Post JWT
+
+Upload-Post supports 1-click account linking — generate a short-lived
+URL, send it to the brand, they open it and pick which socials to
+connect (TikTok, IG, YouTube, etc.). Tokens land in our Upload-Post
+account automatically.
+
+1. Create the profile:
+   ```bash
+   python -c "import upload_post, os; print(upload_post.UploadPostClient(api_key=os.environ['UPLOAD_POST_API_KEY']).create_user('NewBrand'))"
+   ```
+2. Generate the connect URL:
+   ```bash
+   python scripts/generate_upload_post_onboarding_url.py \
+       --user NewBrand \
+       --platforms tiktok,instagram \
+       --title "Connect your socials to NewBrand"
+   ```
+3. Send the URL to the brand. Once they link, the
+   `social_account_connected` webhook fires → log it and flip the brand
+   config's `platforms.upload_post_<target>.user` to `"NewBrand"`.
 
 ## ORM guardrails
 
