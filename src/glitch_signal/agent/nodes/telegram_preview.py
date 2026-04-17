@@ -15,8 +15,9 @@ from telegram.constants import ParseMode
 
 from glitch_signal.agent.state import SignalAgentState
 from glitch_signal.config import brand_config, brand_ids, settings
-from glitch_signal.db.models import ContentScript, ScheduledPost, VideoAsset
+from glitch_signal.db.models import ContentScript, ScheduledPost, Signal, VideoAsset
 from glitch_signal.db.session import _session_factory
+from glitch_signal.media.filename_parser import parse as parse_filename
 
 log = structlog.get_logger(__name__)
 
@@ -37,6 +38,17 @@ async def telegram_preview_node(state: SignalAgentState) -> SignalAgentState:
     async with factory() as session:
         cs = await session.get(ContentScript, script_id) if script_id else None
         asset = await session.get(VideoAsset, asset_id)
+        # Look up the originating Signal so the variant-aware dispatcher
+        # can spread visually near-duplicate Meta ad variants across the
+        # TikTok grid. Only drive_footage clips carry a Drive filename;
+        # ai_generated assets leave variant_group empty (dispatcher
+        # treats them as non-rotatable).
+        signal_filename = None
+        if cs and cs.signal_id:
+            sig = await session.get(Signal, cs.signal_id)
+            if sig and sig.source == "drive":
+                # drive_scout stores "Drive clip: <filename>" in summary.
+                signal_filename = sig.summary.replace("Drive clip: ", "", 1) or None
 
     now = datetime.now(UTC).replace(tzinfo=None)
     veto_deadline = now + timedelta(hours=VETO_WINDOW_HOURS)
@@ -47,6 +59,13 @@ async def telegram_preview_node(state: SignalAgentState) -> SignalAgentState:
         or (getattr(asset, "brand_id", None) if asset else None)
         or settings().default_brand_id
     )
+
+    variant_group = product = geo = None
+    if signal_filename:
+        parsed = parse_filename(signal_filename)
+        variant_group = parsed.variant_group
+        product = parsed.product
+        geo = parsed.geo
 
     # Write ScheduledPost in pending_veto state
     factory = _session_factory()
@@ -59,6 +78,9 @@ async def telegram_preview_node(state: SignalAgentState) -> SignalAgentState:
             scheduled_for=scheduled_for,
             status="pending_veto",
             veto_deadline=veto_deadline,
+            variant_group=variant_group,
+            product=product,
+            geo=geo,
         )
         session.add(sp)
         await session.commit()

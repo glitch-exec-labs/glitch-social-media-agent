@@ -216,6 +216,15 @@ async def _promote_veto_windows() -> None:
 
 # ---------------------------------------------------------------------------
 # 4. dispatch_scheduled_posts — queued → dispatching → publish
+#
+# Brands WITH a `tasks.video_uploader.posting_rules` block get
+# variant-aware dispatch: at most one post per tick per brand, gated by
+# slots / daily_cap / min_interval / skip_patterns, and chosen so two
+# near-duplicate Meta ad variants aren't posted back-to-back on the
+# TikTok grid.
+#
+# Brands WITHOUT rules keep the legacy "claim up to 10" behaviour so the
+# ai_generated Glitch Executor pipeline is unchanged.
 # ---------------------------------------------------------------------------
 
 async def _dispatch_scheduled_posts() -> None:
@@ -223,22 +232,61 @@ async def _dispatch_scheduled_posts() -> None:
 
     factory = _session_factory()
     async with factory() as session:
-        # Atomically claim rows to prevent double-dispatch
         result = await session.execute(
             select(ScheduledPost).where(
                 ScheduledPost.status == "queued",
                 ScheduledPost.scheduled_for <= now,
-            ).limit(10)
+            )
         )
-        posts = result.scalars().all()
+        all_candidates = result.scalars().all()
 
-        for sp in posts:
+    if not all_candidates:
+        return
+
+    # Partition candidates: rules-governed brands vs legacy brands.
+    from collections import defaultdict
+    by_brand: dict[str, list[ScheduledPost]] = defaultdict(list)
+    for sp in all_candidates:
+        by_brand[sp.brand_id].append(sp)
+
+    claimed: list[ScheduledPost] = []
+
+    for brand_id, brand_candidates in by_brand.items():
+        rules = _posting_rules_for(brand_id)
+        if rules is None:
+            # Legacy path — claim up to 10, no gating.
+            for sp in brand_candidates[:10]:
+                claimed.append(sp)
+            continue
+
+        picked = await _pick_with_rules(brand_id, brand_candidates, rules, now)
+        if picked is not None:
+            claimed.append(picked)
+        else:
+            log.info(
+                "scheduler.dispatch_skipped_by_rules",
+                brand_id=brand_id,
+                candidates=len(brand_candidates),
+            )
+
+    if not claimed:
+        return
+
+    # Atomically flip status for claimed rows.
+    factory = _session_factory()
+    async with factory() as session:
+        ids = [sp.id for sp in claimed]
+        result = await session.execute(
+            select(ScheduledPost).where(ScheduledPost.id.in_(ids))
+        )
+        rows = result.scalars().all()
+        for sp in rows:
             sp.status = "dispatching"
             sp.last_attempt_at = now
             session.add(sp)
         await session.commit()
 
-    for sp in posts:
+    for sp in claimed:
         if settings().is_dry_run:
             log.info("scheduler.dry_run_publish", scheduled_post_id=sp.id, platform=sp.platform)
             factory = _session_factory()
@@ -254,6 +302,225 @@ async def _dispatch_scheduled_posts() -> None:
             await publish(sp.id)
         except Exception as exc:
             log.error("scheduler.publish_error", scheduled_post_id=sp.id, error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Variant-aware picker — called for brands that declare posting_rules.
+# ---------------------------------------------------------------------------
+
+def _posting_rules_for(brand_id: str) -> dict | None:
+    """Return the brand's video_uploader posting_rules block, or None."""
+    try:
+        from glitch_signal.config import brand_config
+        cfg = brand_config(brand_id)
+    except Exception:
+        return None
+    task = (cfg.get("tasks") or {}).get("video_uploader") or {}
+    if not task.get("enabled", False):
+        return None
+    rules = task.get("posting_rules")
+    if not rules:
+        return None
+    return rules
+
+
+async def _pick_with_rules(
+    brand_id: str,
+    candidates: list[ScheduledPost],
+    rules: dict,
+    now: datetime,
+) -> ScheduledPost | None:
+    """Pick at most one ScheduledPost that satisfies every rule."""
+    from zoneinfo import ZoneInfo
+
+    # Gate 1 — slots. Convert `now` to the brand timezone before comparing.
+    slots: list[str] = rules.get("slots_local") or []
+    if slots:
+        from glitch_signal.config import brand_config
+        tz = brand_config(brand_id).get("timezone", "UTC")
+        try:
+            local_now = now.replace(tzinfo=UTC).astimezone(ZoneInfo(tz))
+        except Exception:
+            local_now = now.replace(tzinfo=UTC)
+        if not _in_any_slot(local_now, slots, tolerance_minutes=15):
+            return None
+
+    # Gate 2 — daily cap (uses PublishedPost as truth).
+    cap = rules.get("daily_cap")
+    if cap is not None:
+        posted_today = await _count_posts_today(brand_id, now)
+        if posted_today >= cap:
+            return None
+
+    # Gate 3 — min interval since last post.
+    min_int = rules.get("min_interval_minutes") or 0
+    if min_int > 0:
+        mins = await _minutes_since_last_post(brand_id, now)
+        if mins is not None and mins < min_int:
+            return None
+
+    # Gate 4 — skip patterns (match on any recent Drive filename the row
+    # carries via product/variant_group; if the filename match were needed
+    # we'd have to join Signal, so we check the asset file path instead).
+    skip_patterns: list[str] = [p.lower() for p in rules.get("skip_patterns") or []]
+
+    # Load recent post history (variant_groups + products).
+    lookback = max(rules.get("variant_gap") or 0, rules.get("product_gap") or 0)
+    recent_variant_groups, recent_products = await _recent_brand_post_keys(
+        brand_id, limit=lookback
+    )
+
+    # Order candidates.
+    order = rules.get("order", "oldest_first")
+    if order == "newest_first":
+        candidates = sorted(candidates, key=lambda sp: sp.scheduled_for, reverse=True)
+    else:
+        candidates = sorted(candidates, key=lambda sp: sp.scheduled_for)
+
+    # First pass — strict (both gaps enforced).
+    pick = _first_eligible(
+        candidates,
+        recent_variant_groups=recent_variant_groups,
+        recent_products=recent_products,
+        variant_gap=rules.get("variant_gap") or 0,
+        product_gap=rules.get("product_gap") or 0,
+        skip_patterns=skip_patterns,
+    )
+    if pick:
+        return pick
+
+    # Starvation guard: relax product_gap first.
+    pick = _first_eligible(
+        candidates,
+        recent_variant_groups=recent_variant_groups,
+        recent_products=[],
+        variant_gap=rules.get("variant_gap") or 0,
+        product_gap=0,
+        skip_patterns=skip_patterns,
+    )
+    if pick:
+        log.info(
+            "scheduler.dispatch_relaxed_product_gap",
+            brand_id=brand_id, scheduled_post_id=pick.id,
+        )
+        return pick
+
+    # Still nothing — relax variant_gap too (truly starved queue).
+    pick = _first_eligible(
+        candidates,
+        recent_variant_groups=[],
+        recent_products=[],
+        variant_gap=0,
+        product_gap=0,
+        skip_patterns=skip_patterns,
+    )
+    if pick:
+        log.info(
+            "scheduler.dispatch_relaxed_variant_gap",
+            brand_id=brand_id, scheduled_post_id=pick.id,
+        )
+    return pick
+
+
+def _first_eligible(
+    candidates: list[ScheduledPost],
+    *,
+    recent_variant_groups: list[str],
+    recent_products: list[str],
+    variant_gap: int,
+    product_gap: int,
+    skip_patterns: list[str],
+) -> ScheduledPost | None:
+    """Walk candidates in order, return the first that passes every rule."""
+    recent_variants_window = recent_variant_groups[:variant_gap] if variant_gap else []
+    recent_products_window = recent_products[:product_gap] if product_gap else []
+
+    for sp in candidates:
+        if skip_patterns and sp.variant_group:
+            lvg = sp.variant_group.lower()
+            if any(p in lvg for p in skip_patterns):
+                continue
+        if sp.variant_group and sp.variant_group in recent_variants_window:
+            continue
+        if sp.product and sp.product in recent_products_window:
+            continue
+        return sp
+    return None
+
+
+def _in_any_slot(local_now: datetime, slots: list[str], *, tolerance_minutes: int) -> bool:
+    """True if `local_now` is within `tolerance_minutes` of any HH:MM slot."""
+    now_mins = local_now.hour * 60 + local_now.minute
+    for s in slots:
+        try:
+            hh, mm = [int(x) for x in s.split(":")]
+        except ValueError:
+            continue
+        slot_mins = hh * 60 + mm
+        if abs(now_mins - slot_mins) <= tolerance_minutes:
+            return True
+    return False
+
+
+async def _count_posts_today(brand_id: str, now: datetime) -> int:
+    from glitch_signal.db.models import PublishedPost
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    factory = _session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(PublishedPost).where(
+                PublishedPost.brand_id == brand_id,
+                PublishedPost.published_at >= day_start,
+            )
+        )
+        return len(result.scalars().all())
+
+
+async def _minutes_since_last_post(brand_id: str, now: datetime) -> float | None:
+    from glitch_signal.db.models import PublishedPost
+    factory = _session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(PublishedPost)
+            .where(PublishedPost.brand_id == brand_id)
+            .order_by(PublishedPost.published_at.desc())
+            .limit(1)
+        )
+        latest = result.scalar_one_or_none()
+    if latest is None or latest.published_at is None:
+        return None
+    return (now - latest.published_at).total_seconds() / 60.0
+
+
+async def _recent_brand_post_keys(
+    brand_id: str, *, limit: int
+) -> tuple[list[str], list[str]]:
+    """Return (variant_groups, products) for the brand's last `limit` posts,
+    newest first. Joins PublishedPost→ScheduledPost so we read the
+    parsed-filename fields off the scheduled row."""
+    if limit <= 0:
+        return [], []
+    from glitch_signal.db.models import PublishedPost
+    factory = _session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(PublishedPost)
+            .where(PublishedPost.brand_id == brand_id)
+            .order_by(PublishedPost.published_at.desc())
+            .limit(limit)
+        )
+        pubs = result.scalars().all()
+        variant_groups: list[str] = []
+        products: list[str] = []
+        for pub in pubs:
+            sp = await session.get(ScheduledPost, pub.scheduled_post_id)
+            if not sp:
+                continue
+            if sp.variant_group:
+                variant_groups.append(sp.variant_group)
+            if sp.product:
+                products.append(sp.product)
+    return variant_groups, products
 
 
 # ---------------------------------------------------------------------------

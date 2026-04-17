@@ -489,6 +489,83 @@ account automatically.
    `social_account_connected` webhook fires → log it and flip the brand
    config's `platforms.upload_post_<target>.user` to `"NewBrand"`.
 
+---
+
+## Brand × Task × Output registry
+
+Each brand declares its tasks under `tasks.<task_name>` in `brand/configs/<brand_id>.json`:
+
+```json
+"tasks": {
+  "video_uploader": {
+    "enabled": true,
+    "posting_rules": { ... },
+    "outputs": {
+      "google_sheet": {
+        "sheet_id": "<spreadsheet id>",
+        "worksheet": "Sheet1"
+      }
+    }
+  }
+}
+```
+
+The scheduler walks the registry at dispatch time — adding a new brand
+or a new task type is purely a config change. Task types today:
+`video_uploader`.
+
+### Posting rules (video_uploader)
+
+Applies per brand. Any key absent = no constraint.
+
+| Key | Purpose |
+|---|---|
+| `daily_cap` | Max posts per calendar day (brand timezone). Checked against `PublishedPost` rows. |
+| `slots_local` | HH:MM allowed windows in the brand's timezone. Now is within any slot (± 15 min tolerance) → dispatch; else wait. |
+| `min_interval_minutes` | Minimum gap since the brand's last publish. |
+| `variant_gap` | Min posts between two files sharing the same `variant_group` (filename parser output). Prevents near-duplicate Meta ad variants landing adjacent on the TikTok grid. |
+| `product_gap` | Min posts between two files of the same parsed `product`. |
+| `skip_patterns` | Substrings; any file whose `variant_group` contains one is skipped. |
+| `order` | `oldest_first` (default) or `newest_first`. |
+
+**Starvation guard:** if rules leave no eligible candidate, `product_gap`
+is relaxed first, then `variant_gap`. The queue never blocks on itself.
+
+### Filename parser
+
+`src/glitch_signal/media/filename_parser.py` turns Drive filenames into
+`{product, ad_num, geo, variant_tags, variant_group, editor}`. Handles
+the real-world chaos of client filenames: mixed case, separators
+(`_`/`-`/`.`/space), date-slashes (`2/4/26`), product-glued numbers
+(`thyroid9`, `wht2`), misspellings (`diabetis`), Drive dup markers
+(`foo (1).mp4`). Parsed fields are denormalised onto `ScheduledPost`
+at schedule time so the dispatcher reads them with zero joins.
+
+### Google Sheet output
+
+When the brand config points at a spreadsheet, `drive_scout` appends a
+row per discovered file, `caption_writer` flips `status`→`captioned`
+and writes the caption back, and `publisher` flips `status`→`posted`
+and writes the TikTok URL after successful publish.
+
+Columns: `video_name`, `drive_link`, `product`, `variant_group`, `geo`,
+`caption`, `status`, `scheduled_for`, `posted_at`, `tiktok_url`, `notes`.
+
+Share the sheet with `GOOGLE_DRIVE_SA_JSON`'s service account email
+(same SA used by `drive_scout`) as an Editor. No separate credential.
+
+### Rules-based caption mode
+
+`caption_writer.mode: "rules_based"` hands the LLM a parsed-filename
++ the brand's markdown product catalog + strict caption rules. Cheap
+(Gemini Flash, same as `filename` mode) but the output stays grounded
+in the brand's actual SKUs and avoids regulatory landmines.
+
+Catalog path set via `caption_writer.product_catalog_path`. See
+`brand/prompts/nmahya_products.md` for the reference shape.
+
+---
+
 ## ORM guardrails
 
 Hard-stop phrases trigger an **immediate Telegram alert and zero automated response** — no LLM involved, pure rule engine:

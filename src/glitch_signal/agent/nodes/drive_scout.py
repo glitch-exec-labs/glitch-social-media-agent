@@ -112,6 +112,13 @@ async def drive_scout_node(state: SignalAgentState) -> SignalAgentState:
 
         await session.commit()
 
+    # Mirror newly-queued files into the brand's Google Sheet output (if
+    # one is configured on the video_uploader task). Status starts as
+    # `queued` — caption_writer + publisher flip it forward as work
+    # progresses. Done outside the DB transaction so a Sheets outage
+    # never blocks Signal creation.
+    await _mirror_to_sheet(brand_id, new_signals)
+
     log.info(
         "drive_scout.done",
         brand=brand_id,
@@ -158,3 +165,33 @@ async def _already_seen(session, brand_id: str, drive_file_id: str) -> bool:
         ).limit(1)
     )
     return result.scalar_one_or_none() is not None
+
+
+# ---------------------------------------------------------------------------
+# Google Sheet mirror — one row per newly-discovered Drive file.
+#
+# The brand config opts in via
+#   tasks.video_uploader.outputs.google_sheet.{sheet_id, worksheet}
+# Missing block / any API error is logged but never fails the scout run
+# — the agent's internal DB is still the source of truth.
+# ---------------------------------------------------------------------------
+
+async def _mirror_to_sheet(brand_id: str, new_signals: list[dict]) -> None:
+    from glitch_signal.integrations import sheet_tracker
+    from glitch_signal.media.filename_parser import parse as parse_filename
+
+    if not new_signals:
+        return
+    if not await sheet_tracker.ensure_header(brand_id):
+        return
+
+    for sig in new_signals:
+        parsed = parse_filename(sig["name"])
+        await sheet_tracker.append_new_video(
+            brand_id,
+            video_name=sig["name"],
+            drive_file_id=sig["source_ref"],
+            product=parsed.product,
+            variant_group=parsed.variant_group,
+            geo=parsed.geo,
+        )

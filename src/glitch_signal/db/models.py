@@ -110,6 +110,12 @@ class ScheduledPost(SQLModel, table=True):
     # pipeline. Used by the webhook handler and the reconciliation sweep to
     # correlate vendor callbacks back to the ScheduledPost row.
     vendor_request_id: str | None = Field(default=None, index=True)
+    # Parsed-filename denormalisations used by the variant-aware dispatcher
+    # to avoid posting visually near-duplicate Meta ad variants back-to-back.
+    # Populated by telegram_preview when the ScheduledPost is created.
+    variant_group: str | None = Field(default=None, index=True)
+    product: str | None = None
+    geo: str | None = None
 
 
 # ---------------------------------------------------------------------------

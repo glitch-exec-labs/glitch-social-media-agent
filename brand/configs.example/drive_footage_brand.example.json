@@ -11,7 +11,10 @@
     "watermark_path": null,
     "voice": "Replace with the brand's actual voice guide. Warm / grounded / technical — whatever matches the on-screen content."
   },
-  "video_model_routing": {"phase": 1, "model_map": {}},
+  "video_model_routing": {
+    "phase": 1,
+    "model_map": {}
+  },
   "orm_guardrails": {
     "hard_stop_phrases": [
       "allergic reaction",
@@ -23,23 +26,43 @@
       "legal action"
     ],
     "competitor_names": [],
-    "auto_respond_tiers": ["positive", "neutral_faq"],
-    "review_window_seconds": {"negative_mild": 7200},
-    "escalate_tiers": ["negative_severe", "legal_flag"],
-    "ignore_tiers": ["spam"],
+    "auto_respond_tiers": [
+      "positive",
+      "neutral_faq"
+    ],
+    "review_window_seconds": {
+      "negative_mild": 7200
+    },
+    "escalate_tiers": [
+      "negative_severe",
+      "legal_flag"
+    ],
+    "ignore_tiers": [
+      "spam"
+    ],
     "min_confidence_threshold": 0.7
   },
   "platforms": {
-    "youtube":   {"enabled": false},
-    "twitter":   {"enabled": false},
-    "instagram": {"enabled": false},
+    "youtube": {
+      "enabled": false
+    },
+    "twitter": {
+      "enabled": false
+    },
+    "instagram": {
+      "enabled": false
+    },
     "tiktok": {
       "enabled": false,
       "_comment": "Direct-post — gated on your own TikTok app audit. Keep disabled until the app is approved; use upload_post_tiktok below as the default publisher.",
       "open_id": null,
       "daily_cap": 2,
       "default_privacy_level": "PUBLIC_TO_EVERYONE",
-      "default_tags": ["tag1", "tag2", "tag3"]
+      "default_tags": [
+        "tag1",
+        "tag2",
+        "tag3"
+      ]
     },
     "upload_post_tiktok": {
       "enabled": true,
@@ -47,12 +70,57 @@
       "user": "<UPLOAD-POST MANAGED-USER PROFILE NAME FROM list_users()>",
       "daily_cap": 5,
       "default_privacy_level": "PUBLIC_TO_EVERYONE",
-      "default_tags": ["tag1", "tag2", "tag3"]
+      "default_tags": [
+        "tag1",
+        "tag2",
+        "tag3"
+      ]
     }
   },
   "media_pipeline": {
-    "tiktok": ["strip_audio"]
+    "tiktok": [
+      "strip_audio"
+    ]
   },
-  "default_hashtags": ["#tag1", "#tag2", "#tag3"],
-  "voice_prompt_path": "brand/prompts/drive_footage_brand_voice.md"
+  "default_hashtags": [
+    "#tag1",
+    "#tag2",
+    "#tag3"
+  ],
+  "voice_prompt_path": "brand/prompts/drive_footage_brand_voice.md",
+  "caption_writer": {
+    "mode": "rules_based",
+    "_comment": "Options: filename (LLM reads the file name only — cheap, generic), rules_based (LLM + brand catalog + filename parse — cheap + on-brand), vision (Gemini 2.5 Pro reads the video — paid per clip).",
+    "product_catalog_path": "brand/prompts/<brand_id>_products.md"
+  },
+  "tasks": {
+    "_comment": "Brand × task × output registry. Each key is a task type; each task can declare its own posting_rules, outputs, etc. The scheduler walks this at dispatch time.",
+    "video_uploader": {
+      "enabled": true,
+      "posting_rules": {
+        "daily_cap": 2,
+        "slots_local": [
+          "17:30",
+          "22:00"
+        ],
+        "min_interval_minutes": 240,
+        "variant_gap": 5,
+        "product_gap": 2,
+        "skip_patterns": [
+          ".draft.",
+          ".wip.",
+          "_old."
+        ],
+        "order": "oldest_first",
+        "_comment": "slots_local = HH:MM in the brand's timezone. variant_gap/product_gap = min posts between two files in the same variant_group/product. Starvation guard auto-relaxes if the queue only has same-group candidates left."
+      },
+      "outputs": {
+        "google_sheet": {
+          "_comment": "Service account (GOOGLE_DRIVE_SA_JSON) must be shared as Editor on this sheet.",
+          "sheet_id": "<SPREADSHEET ID FROM docs.google.com/spreadsheets/d/...>",
+          "worksheet": "Sheet1"
+        }
+      }
+    }
+  }
 }
