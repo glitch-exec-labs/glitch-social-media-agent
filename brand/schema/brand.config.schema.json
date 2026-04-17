@@ -121,6 +121,52 @@
             "video_cover_timestamp_ms": {"type": "integer", "minimum": 0},
             "default_tags": {"type": "array", "items": {"type": "string"}}
           }
+        },
+        "upload_post_tiktok": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Post to TikTok via Upload-Post (audited partner app). Cheaper than Zernio at real volume. 'user' is the Upload-Post managed-user profile name, not the TikTok handle.",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "user": {
+              "type": ["string", "null"],
+              "description": "Upload-Post managed-user profile username (from list_users())."
+            },
+            "daily_cap": {"type": "integer", "minimum": 0},
+            "default_privacy_level": {
+              "type": "string",
+              "enum": ["PUBLIC_TO_EVERYONE", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "SELF_ONLY"]
+            },
+            "disable_duet": {"type": "boolean"},
+            "disable_stitch": {"type": "boolean"},
+            "disable_comment": {"type": "boolean"},
+            "video_cover_timestamp_ms": {"type": "integer", "minimum": 0},
+            "post_mode": {"type": "string", "enum": ["DIRECT_POST", "MEDIA_UPLOAD"]},
+            "is_aigc": {"type": "boolean"},
+            "default_tags": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "upload_post_instagram": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "user": {"type": ["string", "null"]},
+            "media_type": {"type": "string", "enum": ["REELS", "STORIES"]},
+            "share_to_feed": {"type": "boolean"},
+            "default_tags": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "upload_post_youtube": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "user": {"type": ["string", "null"]},
+            "privacy_status": {"type": "string", "enum": ["public", "unlisted", "private"]},
+            "category_id": {"type": "string"},
+            "default_tags": {"type": "array", "items": {"type": "string"}}
+          }
         }
       }
     },

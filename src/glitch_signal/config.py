@@ -110,6 +110,11 @@ class Settings(BaseSettings):
     zernio_api_key: str = ""
     zernio_base_url: str = "https://zernio.com/api"
 
+    # --- Upload-Post (alternative audited multi-platform vendor) ---
+    # Cheaper than Zernio at real volume. Platform keys: "upload_post_tiktok",
+    # "upload_post_instagram", etc. See platforms/upload_post.py.
+    upload_post_api_key: str = ""
+
     # --- Media-serve public base URL ---
     # Zernio fetches videos from this host when posts are published via
     # the zernio_* publishers. An nginx location block on this hostname
