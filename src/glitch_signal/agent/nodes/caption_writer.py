@@ -237,6 +237,55 @@ async def _generate_caption(
     return title, caption, hashtags
 
 
+async def _acompletion_with_retry(**kwargs) -> object:
+    """Call litellm.acompletion with exponential backoff on transient errors.
+
+    Gemini (our `cheap` tier) routinely returns 503 ServiceUnavailable
+    during high-demand windows — observed during the Namhya preview run
+    on 2026-04-17 where consecutive caption calls hit 503 over a span
+    of ~2 minutes. A single try would fall straight back to the caption
+    writer's fail-soft template; with backoff the first attempt after
+    the first 5xx usually succeeds.
+
+    Retries on litellm's transient-error family (ServiceUnavailable,
+    RateLimit, InternalServerError, BadGateway, APIConnection,
+    InternalServerError). Hard errors (Auth, BadRequest, NotFound,
+    ContextWindowExceeded) are re-raised immediately — no retry.
+
+    Backoff: 30s → 60s → 120s (5 attempts total). Caller sees the
+    original exception if every attempt fails.
+    """
+    import asyncio as _asyncio
+
+    transient = (
+        litellm.ServiceUnavailableError,
+        litellm.RateLimitError,
+        litellm.InternalServerError,
+        litellm.BadGatewayError,
+        litellm.APIConnectionError,
+    )
+    max_attempts = 5
+    base_delay_s = 30
+
+    for attempt in range(max_attempts):
+        try:
+            return await litellm.acompletion(**kwargs)
+        except transient as exc:
+            if attempt == max_attempts - 1:
+                raise
+            delay = min(base_delay_s * (2 ** attempt), 120)
+            log.info(
+                "caption_writer.retry_transient",
+                attempt=attempt + 1,
+                delay_s=delay,
+                error_type=type(exc).__name__,
+                error=str(exc)[:200],
+            )
+            await _asyncio.sleep(delay)
+    # Unreachable — loop either returns or raises.
+    raise RuntimeError("_acompletion_with_retry: exited loop without outcome")
+
+
 async def _generate_via_rules_based(
     *,
     signal: Signal,
@@ -288,7 +337,7 @@ async def _generate_via_rules_based(
     mc = pick("cheap")
     raw_content = ""
     try:
-        resp = await litellm.acompletion(
+        resp = await _acompletion_with_retry(
             model=mc.model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -320,7 +369,7 @@ async def _generate_via_filename(*, system_prompt: str, user_context: str) -> di
     mc = pick("cheap")
     raw_content = ""
     try:
-        resp = await litellm.acompletion(
+        resp = await _acompletion_with_retry(
             model=mc.model,
             messages=[
                 {"role": "system", "content": system_prompt},
