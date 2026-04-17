@@ -242,6 +242,39 @@ class TestCaptionWriterNode:
 
 
 # ---------------------------------------------------------------------------
+# caption_writer — LLM output parsing robustness
+# ---------------------------------------------------------------------------
+
+class TestCaptionJsonParser:
+    def test_plain_json(self):
+        from glitch_signal.agent.nodes.caption_writer import _parse_caption_json
+        got = _parse_caption_json('{"title": "a", "caption": "b", "hashtags": ["x"]}')
+        assert got == {"title": "a", "caption": "b", "hashtags": ["x"]}
+
+    def test_markdown_fenced(self):
+        from glitch_signal.agent.nodes.caption_writer import _parse_caption_json
+        got = _parse_caption_json('```json\n{"title": "a", "caption": "b"}\n```')
+        assert got == {"title": "a", "caption": "b"}
+
+    def test_truncated_recovers_prefix(self):
+        from glitch_signal.agent.nodes.caption_writer import _parse_caption_json
+        # Model ran out of tokens mid-generation: everything before the
+        # last complete brace should still be usable.
+        truncated = '{"title": "a", "caption": "b"} and then trailing gar'
+        got = _parse_caption_json(truncated)
+        assert got.get("caption") == "b"
+
+    def test_empty_returns_empty(self):
+        from glitch_signal.agent.nodes.caption_writer import _parse_caption_json
+        assert _parse_caption_json("") == {}
+        assert _parse_caption_json("   ") == {}
+
+    def test_garbage_returns_empty(self):
+        from glitch_signal.agent.nodes.caption_writer import _parse_caption_json
+        assert _parse_caption_json("not json at all, no braces") == {}
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

@@ -163,6 +163,7 @@ async def _generate_caption(
         "Write the post."
     )
 
+    raw_content = ""
     try:
         resp = await litellm.acompletion(
             model=mc.model,
@@ -171,12 +172,21 @@ async def _generate_caption(
                 {"role": "user", "content": user_msg},
             ],
             response_format={"type": "json_object"},
-            max_tokens=800,
+            # Gemini 2.5 Flash counts reasoning ("thinking") tokens against
+            # max_tokens and will silently truncate the visible output when
+            # the ceiling is tight. 4096 comfortably covers a 2000-char
+            # caption plus whatever thinking the model wants to do.
+            max_tokens=4096,
             **mc.kwargs,
         )
-        data = json.loads(resp.choices[0].message.content or "{}")
+        raw_content = resp.choices[0].message.content or ""
+        data = _parse_caption_json(raw_content)
     except Exception as exc:
-        log.warning("caption_writer.llm_failed", error=str(exc))
+        log.warning(
+            "caption_writer.llm_failed",
+            error=str(exc),
+            raw_preview=raw_content[:200] if raw_content else "",
+        )
         data = {}
 
     title = str(data.get("title", "")).strip()[:100] or display_name
@@ -184,11 +194,56 @@ async def _generate_caption(
     raw_tags = data.get("hashtags") or []
     hashtags = [str(t).lstrip("#").strip().lower() for t in raw_tags if t]
 
+    # Fail-soft fallback: if the LLM path didn't yield a caption, compose
+    # one from the brand's default_hashtags (stripping "#" then re-adding
+    # so the caption body is correctly prefixed).
     if not caption:
-        # Fail soft: produce a minimal caption from default hashtags.
-        caption = (signal.summary + "\n\n" + " ".join(f"#{t}" for t in hashtags)).strip()
+        fallback_tags = hashtags or [
+            h.lstrip("#").strip().lower() for h in default_hashtags if h
+        ]
+        hashtag_block = " ".join(f"#{t}" for t in fallback_tags)
+        caption = (f"{display_name}" + (f"\n\n{hashtag_block}" if hashtag_block else "")).strip()
+        hashtags = fallback_tags
 
     return title, caption, hashtags
+
+
+def _parse_caption_json(raw: str) -> dict:
+    """Best-effort JSON parse for LLM output.
+
+    Handles the common failure modes we've seen in practice:
+    - leading/trailing whitespace or markdown fences (```json ... ```)
+    - output that ended mid-generation (truncated) — try to recover the
+      last valid {"title": ..., "caption": ..., "hashtags": [...]} block
+    """
+    if not raw:
+        return {}
+    text = raw.strip()
+
+    # Strip markdown code fences if the model ignored response_format=json.
+    if text.startswith("```"):
+        # Drop the leading ```[json] and the trailing ```
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+
+    # Happy path
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Recovery: find the last closing brace that still yields valid JSON.
+    # This rescues outputs truncated after "caption": "..." but before the
+    # closing brace.
+    last_brace = text.rfind("}")
+    while last_brace > 0:
+        try:
+            return json.loads(text[: last_brace + 1])
+        except json.JSONDecodeError:
+            last_brace = text.rfind("}", 0, last_brace)
+    return {}
 
 
 def _load_voice(cfg: dict) -> str | None:
