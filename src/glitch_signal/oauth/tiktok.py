@@ -10,8 +10,7 @@ Docs: https://developers.tiktok.com/doc/login-kit-web
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
@@ -27,7 +26,7 @@ _TOKEN_EXCHANGE_PATH = "/v2/oauth/token/"
 _AUTHORIZE_PATH = "/v2/auth/authorize/"
 
 
-def build_authorize_url(brand_id: str, *, scopes: Optional[str] = None) -> str:
+def build_authorize_url(brand_id: str, *, scopes: str | None = None) -> str:
     s = settings()
     if not s.tiktok_client_key:
         raise RuntimeError(
@@ -111,7 +110,7 @@ async def persist_tokens(brand_id: str, tokens: dict) -> str:
     """Write the token response to platform_auth. Returns the row id."""
     expires_in = int(tokens.get("expires_in") or 0)
     expires_at = (
-        datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=expires_in)
+        datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=expires_in)
         if expires_in
         else None
     )
@@ -142,7 +141,7 @@ async def get_fresh_access_token(brand_id: str) -> str:
             f"{settings().public_base_url}/oauth/tiktok/start?brand={brand_id}"
         )
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     # Refresh ~10 min before expiry to avoid race with in-flight requests.
     if auth.access_token_expires_at and auth.access_token_expires_at - timedelta(minutes=10) <= now:
         if not auth.refresh_token:

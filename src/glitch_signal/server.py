@@ -9,7 +9,6 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
-import json
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -19,7 +18,7 @@ from telegram import Update
 
 from glitch_signal import __version__
 from glitch_signal.config import brand_ids, settings
-from glitch_signal.db.models import ScheduledPost, Signal, VideoJob
+from glitch_signal.db.models import ScheduledPost, VideoJob
 from glitch_signal.db.session import _session_factory
 
 log = structlog.get_logger(__name__)
@@ -203,7 +202,7 @@ async def oauth_tiktok_start(brand: str) -> RedirectResponse:
     try:
         url = build_authorize_url(brand)
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     log.info("oauth.tiktok.start", brand=brand)
     return RedirectResponse(url=url, status_code=302)
@@ -236,7 +235,7 @@ async def oauth_tiktok_callback(
         brand_id = tiktok_oauth.parse_state(state)
     except ValueError as exc:
         log.warning("oauth.tiktok.bad_state", error=str(exc))
-        raise HTTPException(status_code=400, detail=f"Invalid state: {exc}")
+        raise HTTPException(status_code=400, detail=f"Invalid state: {exc}") from exc
 
     if brand_id not in brand_ids():
         raise HTTPException(status_code=400, detail=f"Unknown brand: {brand_id!r}")

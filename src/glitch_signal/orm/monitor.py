@@ -9,7 +9,7 @@ duplicate rows on repeated polls).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import structlog
@@ -98,7 +98,7 @@ async def _poll_twitter() -> int:
             sentiment=tier_data["sentiment"],
             confidence=tier_data["confidence"],
             guardrail_hit=not is_safe,
-            received_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            received_at=datetime.now(UTC).replace(tzinfo=None),
         )
 
         try:

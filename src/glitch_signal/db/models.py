@@ -7,10 +7,8 @@ Every table stores a full audit trail:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlmodel import Field, SQLModel
-
 
 # ---------------------------------------------------------------------------
 # Signal — one row per discovered event worth making a video about
@@ -61,14 +59,14 @@ class VideoJob(SQLModel, table=True):
     shot_index: int
     model: str                            # kling_2 | runway_gen4 | veo_3 | hailuo | mock
     prompt: str
-    api_job_id: Optional[str] = None
+    api_job_id: str | None = None
     status: str = "queued"               # queued | dispatched | polling | done | failed
-    video_url: Optional[str] = None
-    local_path: Optional[str] = None
-    cost_usd: Optional[float] = None
-    last_error: Optional[str] = None
+    video_url: str | None = None
+    local_path: str | None = None
+    cost_usd: float | None = None
+    last_error: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    completed_at: Optional[datetime] = None
+    completed_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +81,8 @@ class VideoAsset(SQLModel, table=True):
     script_id: str = Field(foreign_key="content_script.id", unique=True, index=True)
     file_path: str
     duration_s: float
-    quality_score: Optional[float] = None
-    qc_notes: Optional[str] = None       # JSON from QC LLM
+    quality_score: float | None = None
+    qc_notes: str | None = None       # JSON from QC LLM
     assembler_version: str = "1.0"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -102,10 +100,10 @@ class ScheduledPost(SQLModel, table=True):
     platform: str
     scheduled_for: datetime
     status: str = "pending_veto"         # pending_veto | queued | dispatching | done | failed | vetoed
-    veto_deadline: Optional[datetime] = None
+    veto_deadline: datetime | None = None
     attempts: int = 0
-    last_attempt_at: Optional[datetime] = None
-    last_error: Optional[str] = None
+    last_attempt_at: datetime | None = None
+    last_error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +118,7 @@ class PublishedPost(SQLModel, table=True):
     scheduled_post_id: str = Field(foreign_key="scheduled_post.id", unique=True)
     platform: str
     platform_post_id: str
-    platform_url: Optional[str] = None
+    platform_url: str | None = None
     published_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -151,7 +149,7 @@ class ScoutCheckpoint(SQLModel, table=True):
     source_key: str = Field(primary_key=True)  # e.g. "github:glitch-cod-confirm"
     brand_id: str = Field(index=True, default="glitch_executor")
     last_checked_at: datetime = Field(default_factory=datetime.utcnow)
-    last_ref: Optional[str] = None             # last commit SHA or MILESTONES SHA
+    last_ref: str | None = None             # last commit SHA or MILESTONES SHA
 
 
 # ---------------------------------------------------------------------------
@@ -167,14 +165,14 @@ class MentionEvent(SQLModel, table=True):
     mention_id: str = Field(unique=True, index=True)  # platform-native ID (dedup key)
     body: str
     from_handle: str
-    author_id: Optional[str] = None
-    in_reply_to_id: Optional[str] = None
-    tier: Optional[str] = None           # classifier output tier
-    sentiment: Optional[str] = None
-    confidence: Optional[float] = None
+    author_id: str | None = None
+    in_reply_to_id: str | None = None
+    tier: str | None = None           # classifier output tier
+    sentiment: str | None = None
+    confidence: float | None = None
     guardrail_hit: bool = False
     received_at: datetime = Field(default_factory=datetime.utcnow)
-    processed_at: Optional[datetime] = None
+    processed_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -191,10 +189,10 @@ class PlatformAuth(SQLModel, table=True):
     id: str = Field(primary_key=True)
     brand_id: str = Field(index=True)
     platform: str = Field(index=True)                # tiktok | youtube | twitter | instagram
-    account_identifier: Optional[str] = Field(default=None, index=True)
+    account_identifier: str | None = Field(default=None, index=True)
     access_token_enc: str                            # Fernet ciphertext
-    refresh_token_enc: Optional[str] = None
-    access_token_expires_at: Optional[datetime] = None
+    refresh_token_enc: str | None = None
+    access_token_expires_at: datetime | None = None
     scopes: str = "[]"                               # JSON list[str]
     status: str = "active"                           # active | needs_reauth | revoked
     raw_provider_response: str = "{}"                # raw provider JSON for debugging
@@ -214,8 +212,8 @@ class OrmResponse(SQLModel, table=True):
     mention_id: str = Field(foreign_key="mention_event.id", unique=True, index=True)
     draft_body: str
     status: str = "pending_review"       # pending_review | auto_sent | sent | vetoed | escalated
-    auto_send_at: Optional[datetime] = None
-    sent_at: Optional[datetime] = None
-    sent_by: Optional[str] = None        # auto | human
-    telegram_message_id: Optional[int] = None
+    auto_send_at: datetime | None = None
+    sent_at: datetime | None = None
+    sent_by: str | None = None        # auto | human
+    telegram_message_id: int | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)

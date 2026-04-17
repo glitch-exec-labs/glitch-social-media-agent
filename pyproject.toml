@@ -74,6 +74,7 @@ phase2 = [
 dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.24",
+  "aiosqlite>=0.20",   # in-memory async DB for tests — never used at runtime
   "ruff>=0.7",
   "mypy>=1.13",
 ]
@@ -101,7 +102,15 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "B", "UP", "ASYNC"]
-ignore = ["E501"]
+ignore = [
+    "E501",     # line length — handled by formatters, not lint
+    # The ASYNC rules below warn when async functions touch the blocking
+    # pathlib / open() APIs. Inside the agent the affected spots are
+    # Telegram preview paths + tiny stat() / exists() checks; switching the
+    # whole codebase to aiofiles for those is more churn than reward.
+    "ASYNC230",
+    "ASYNC240",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

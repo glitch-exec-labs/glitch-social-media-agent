@@ -17,7 +17,6 @@ import asyncio
 import pathlib
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Optional
 
 import structlog
 
@@ -35,8 +34,8 @@ class DriveFile:
     name: str
     mime_type: str
     size: int
-    md5: Optional[str]
-    modified_time: Optional[str]
+    md5: str | None
+    modified_time: str | None
 
 
 class GoogleDriveClient:
@@ -67,7 +66,7 @@ class GoogleDriveClient:
             "modifiedTime, shortcutDetails)"
         )
         files: list[DriveFile] = []
-        page_token: Optional[str] = None
+        page_token: str | None = None
 
         while True:
             resp = (
@@ -107,7 +106,7 @@ class GoogleDriveClient:
         return dest_path.stat().st_size
 
 
-def _normalise(f: dict, svc) -> Optional[DriveFile]:
+def _normalise(f: dict, svc) -> DriveFile | None:
     """Convert a Drive files.list entry to DriveFile, resolving shortcuts."""
     mime = f.get("mimeType") or ""
     fid = f.get("id") or ""

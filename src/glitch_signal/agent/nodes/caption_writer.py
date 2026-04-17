@@ -12,11 +12,10 @@ from __future__ import annotations
 import json
 import pathlib
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import litellm
 import structlog
-from sqlmodel import select
 
 from glitch_signal.agent.llm import pick
 from glitch_signal.agent.state import SignalAgentState
@@ -83,7 +82,7 @@ async def caption_writer_node(state: SignalAgentState) -> SignalAgentState:
 
         script_id = str(uuid.uuid4())
         asset_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
 
         cs = ContentScript(
             id=script_id,

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pathlib
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -38,7 +38,7 @@ async def telegram_preview_node(state: SignalAgentState) -> SignalAgentState:
         cs = await session.get(ContentScript, script_id) if script_id else None
         asset = await session.get(VideoAsset, asset_id)
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     veto_deadline = now + timedelta(hours=VETO_WINDOW_HOURS)
     scheduled_for = now + timedelta(hours=VETO_WINDOW_HOURS)
 

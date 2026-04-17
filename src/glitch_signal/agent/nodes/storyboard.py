@@ -9,7 +9,6 @@ import json
 
 import litellm
 import structlog
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from glitch_signal.agent.llm import pick
 from glitch_signal.agent.state import SignalAgentState

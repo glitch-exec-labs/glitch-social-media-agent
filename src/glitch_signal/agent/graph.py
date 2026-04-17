@@ -20,18 +20,17 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
-from glitch_signal.agent.state import SignalAgentState
+from glitch_signal.agent.nodes.caption_writer import caption_writer_node
+from glitch_signal.agent.nodes.drive_scout import drive_scout_node
+from glitch_signal.agent.nodes.quality_check import quality_check_node
 from glitch_signal.agent.nodes.scout import scout_node
 from glitch_signal.agent.nodes.script_writer import script_writer_node
 from glitch_signal.agent.nodes.storyboard import storyboard_node
-from glitch_signal.agent.nodes.video_router import video_router_node
-from glitch_signal.agent.nodes.video_generator import video_generator_node
-from glitch_signal.agent.nodes.video_assembler import video_assembler_node
-from glitch_signal.agent.nodes.quality_check import quality_check_node
 from glitch_signal.agent.nodes.telegram_preview import telegram_preview_node
-from glitch_signal.agent.nodes.drive_scout import drive_scout_node
-from glitch_signal.agent.nodes.caption_writer import caption_writer_node
-
+from glitch_signal.agent.nodes.video_assembler import video_assembler_node
+from glitch_signal.agent.nodes.video_generator import video_generator_node
+from glitch_signal.agent.nodes.video_router import video_router_node
+from glitch_signal.agent.state import SignalAgentState
 
 MAX_QC_RETRIES = 2
 
@@ -48,6 +47,7 @@ def _qc_router(state: SignalAgentState) -> str:
 async def _escalate_node(state: SignalAgentState) -> SignalAgentState:
     """Send Telegram alert when QC fails after max retries."""
     import structlog
+
     from glitch_signal.config import settings
     log = structlog.get_logger(__name__)
 
