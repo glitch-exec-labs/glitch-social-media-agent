@@ -9,7 +9,7 @@ Two entry paths, chosen per-invocation via `state["content_source"]`:
                                     → [retry]    → storyboard (retry_count < 2)
                                     → [escalate] → END (Telegram alert sent)
 
-  drive_footage (Namhya-style — pre-edited clips from a Drive folder):
+  drive_footage (drive-footage — pre-edited clips from a Drive folder):
     drive_scout → caption_writer → telegram_preview → END
     [video generation + QC are bypassed — footage is post-ready]
 
@@ -96,7 +96,7 @@ def build_graph() -> StateGraph:
     graph.add_node("telegram_preview", telegram_preview_node)
     graph.add_node("escalate", _escalate_node)
 
-    # drive_footage branch (Namhya-style)
+    # drive_footage branch (drive-footage)
     graph.add_node("drive_scout", drive_scout_node)
     graph.add_node("caption_writer", caption_writer_node)
 

@@ -217,14 +217,14 @@ One file per brand under `brand/configs/<brand_id>.json`. Filename stem must equ
 brand/
   configs/                          # gitignored
     glitch_executor.json            # deployed box only
-    nmahya.json
+    drive_brand.json
   configs.example/                  # committed templates
     glitch_executor.example.json
-    nmahya.example.json
+    drive_brand.example.json
   schema/
     brand.config.schema.json        # committed
   prompts/                          # gitignored voice guides
-    nmahya_voice.md
+    drive_brand_voice.md
 ```
 
 Each config carries:
@@ -252,7 +252,7 @@ Same as the original agent flow — Scout → ScriptWriter → Storyboard → Vi
 
 Trigger: `POST /jobs/scout` (optionally with `{signal_id, platform}` body to run per-signal).
 
-### `drive_footage` (Namhya pattern)
+### `drive_footage` (pattern)
 
 Brand supplies pre-edited video clips via a shared Google Drive folder. The agent picks them up, writes a caption, previews, publishes — no video gen.
 
@@ -427,7 +427,7 @@ Preview messages include an inline keyboard for one-tap approve/veto. In multi-b
 
 ## Cost model
 
-### Per-post (drive_footage path — Namhya-style, vendor-published)
+### Per-post (drive_footage path — pattern, vendor-published)
 
 | Line item | Cost |
 |---|---|

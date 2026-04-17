@@ -23,7 +23,7 @@
       "type": "string",
       "enum": ["ai_generated", "drive_footage"],
       "default": "ai_generated",
-      "description": "ai_generated = Kling/Runway pipeline. drive_footage = pre-edited clips from a Drive folder (Nmahya-style)."
+      "description": "ai_generated = Kling/Runway pipeline. drive_footage = pre-edited clips from a Drive folder (drive-footage pattern)."
     },
     "drive_folder_id": {
       "type": ["string", "null"],

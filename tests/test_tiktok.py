@@ -50,20 +50,20 @@ class TestCrypto:
 
     def test_state_token_round_trip(self):
         from glitch_signal import crypto
-        token = crypto.make_state_token({"b": "nmahya", "p": "tiktok"})
+        token = crypto.make_state_token({"b": "drive_brand", "p": "tiktok"})
         payload = crypto.verify_state_token(token)
-        assert payload == {"b": "nmahya", "p": "tiktok"}
+        assert payload == {"b": "drive_brand", "p": "tiktok"}
 
     def test_state_token_tampered_signature_rejected(self):
         from glitch_signal import crypto
-        token = crypto.make_state_token({"b": "nmahya", "p": "tiktok"})
+        token = crypto.make_state_token({"b": "drive_brand", "p": "tiktok"})
         tampered = token[:-4] + "AAAA"
         with pytest.raises(ValueError, match="signature"):
             crypto.verify_state_token(tampered)
 
     def test_state_token_expiry_rejected(self):
         from glitch_signal import crypto
-        token = crypto.make_state_token({"b": "nmahya"}, ttl_s=-1)
+        token = crypto.make_state_token({"b": "drive_brand"}, ttl_s=-1)
         with pytest.raises(ValueError, match="expired"):
             crypto.verify_state_token(token)
 
@@ -76,7 +76,7 @@ class TestTikTokOAuth:
     def test_build_authorize_url_has_expected_params(self):
         from glitch_signal.oauth.tiktok import build_authorize_url
 
-        url = build_authorize_url("nmahya")
+        url = build_authorize_url("drive_brand")
         assert url.startswith("https://www.tiktok.com/v2/auth/authorize/?")
         assert "client_key=test_client_key" in url
         assert "response_type=code" in url
@@ -88,14 +88,14 @@ class TestTikTokOAuth:
         from glitch_signal.crypto import make_state_token
         from glitch_signal.oauth.tiktok import parse_state
 
-        token = make_state_token({"b": "nmahya", "p": "tiktok"})
-        assert parse_state(token) == "nmahya"
+        token = make_state_token({"b": "drive_brand", "p": "tiktok"})
+        assert parse_state(token) == "drive_brand"
 
     def test_parse_state_rejects_wrong_platform(self):
         from glitch_signal.crypto import make_state_token
         from glitch_signal.oauth.tiktok import parse_state
 
-        token = make_state_token({"b": "nmahya", "p": "facebook"})
+        token = make_state_token({"b": "drive_brand", "p": "facebook"})
         with pytest.raises(ValueError, match="platform mismatch"):
             parse_state(token)
 
@@ -131,7 +131,7 @@ class TestPlanChunks:
         # a 2.66 MB final chunk (< 5 MB floor). Correct plan: 8 chunks,
         # chunk_size 10 MB, final chunk = file_size - 7*10 MB = 12.66 MB.
         from glitch_signal.platforms.tiktok import _plan_chunks
-        file_size = 86683219   # 82.7 MB — the Namhya file
+        file_size = 86683219   # 82.7 MB — an 82 MB file
         cs, n = _plan_chunks(file_size)
         assert n == 8
         assert cs == 10 * self.MB
@@ -164,7 +164,7 @@ class TestTikTokPublisher:
         publish_id, url = await tiktok.publish(
             file_path="/does/not/exist.mp4",
             script_id="whatever",
-            brand_id="nmahya",
+            brand_id="drive_brand",
         )
         assert publish_id.startswith("tiktok-dry-")
         assert url is None

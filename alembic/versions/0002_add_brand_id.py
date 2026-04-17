@@ -7,7 +7,7 @@ Create Date: 2026-04-17
 All existing rows are backfilled to the default brand ('glitch_executor'),
 then the server_default is dropped so new rows must specify brand_id
 explicitly. This is the foundation for multi-brand support introduced
-alongside the Nmahya Ayurveda onboarding.
+alongside the multi-brand onboarding (PR #1).
 """
 from __future__ import annotations
 

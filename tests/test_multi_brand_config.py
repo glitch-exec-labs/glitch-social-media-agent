@@ -54,7 +54,7 @@ class TestMultiBrandLoader:
         configs = tmp_path / "configs"
         configs.mkdir()
         _write_config(configs, "glitch_executor")
-        _write_config(configs, "nmahya", content_source="drive_footage")
+        _write_config(configs, "drive_brand", content_source="drive_footage")
 
         monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
         monkeypatch.setenv("DEFAULT_BRAND_ID", "glitch_executor")
@@ -65,9 +65,10 @@ class TestMultiBrandLoader:
         cfg._reset_brand_registry_for_tests()
 
         ids = cfg.brand_ids()
-        assert ids == ["glitch_executor", "nmahya"]
+        # brand_ids() returns alphabetically sorted
+        assert ids == ["drive_brand", "glitch_executor"]
 
-        assert cfg.brand_config("nmahya")["content_source"] == "drive_footage"
+        assert cfg.brand_config("drive_brand")["content_source"] == "drive_footage"
         assert cfg.brand_config("glitch_executor")["content_source"] == "ai_generated"
 
         # Backward-compat: no-arg call returns the default brand's config.
@@ -77,7 +78,7 @@ class TestMultiBrandLoader:
         configs = tmp_path / "configs"
         configs.mkdir()
         # Write a file whose internal brand_id disagrees with the filename.
-        (configs / "nmahya.json").write_text(
+        (configs / "drive_brand.json").write_text(
             json.dumps({
                 "brand_id": "something_else",
                 "display_name": "Mismatched",
@@ -98,7 +99,7 @@ class TestMultiBrandLoader:
     def test_missing_default_brand_fails(self, tmp_path, monkeypatch):
         configs = tmp_path / "configs"
         configs.mkdir()
-        _write_config(configs, "nmahya")
+        _write_config(configs, "drive_brand")
 
         monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
         monkeypatch.setenv("DEFAULT_BRAND_ID", "glitch_executor")
@@ -165,7 +166,7 @@ class TestBrandScopedGuardrails:
         )
         _write_config(
             configs,
-            "nmahya",
+            "drive_brand",
             orm_guardrails={
                 "hard_stop_phrases": ["allergic reaction"],
                 "competitor_names": [],
@@ -182,15 +183,15 @@ class TestBrandScopedGuardrails:
         cfg.settings.cache_clear()
         cfg._reset_brand_registry_for_tests()
 
-        # "SEC" trips glitch_executor but NOT nmahya
+        # "SEC" trips glitch_executor but NOT drive_brand
         safe_ge, _ = guardrails.check("breaking SEC rules", brand_id="glitch_executor")
-        safe_nm, _ = guardrails.check("breaking SEC rules", brand_id="nmahya")
+        safe_nm, _ = guardrails.check("breaking SEC rules", brand_id="drive_brand")
         assert not safe_ge
         assert safe_nm
 
-        # "allergic reaction" trips nmahya but NOT glitch_executor
+        # "allergic reaction" trips drive_brand but NOT glitch_executor
         safe_ge2, _ = guardrails.check("had an allergic reaction", brand_id="glitch_executor")
-        safe_nm2, _ = guardrails.check("had an allergic reaction", brand_id="nmahya")
+        safe_nm2, _ = guardrails.check("had an allergic reaction", brand_id="drive_brand")
         assert safe_ge2
         assert not safe_nm2
 

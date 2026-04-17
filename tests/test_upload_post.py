@@ -40,7 +40,7 @@ class TestUploadPostDryRun:
             platform="upload_post_tiktok",
             file_path="/does/not/matter.mp4",
             script_id="s1",
-            brand_id="nmahya",
+            brand_id="drive_brand",
         )
         assert publish_id.startswith("uploadpost-dry-")
         assert url is None
@@ -59,7 +59,7 @@ class TestUploadPostDryRun:
                 platform="upload_post_tiktok",
                 file_path="/tmp/x.mp4",
                 script_id="s",
-                brand_id="nmahya",
+                brand_id="drive_brand",
             )
 
     @pytest.mark.asyncio
@@ -76,7 +76,7 @@ class TestUploadPostDryRun:
                 platform="upload_post_bogus",
                 file_path="/tmp/x.mp4",
                 script_id="s",
-                brand_id="nmahya",
+                brand_id="drive_brand",
             )
 
 
@@ -140,7 +140,7 @@ class TestNoTitleForShortFormPlatforms:
         )
 
         up._publish_sync(
-            api_key="k", user="Namhya", target_platform="tiktok",
+            api_key="k", user="MyBrand", target_platform="tiktok",
             video_url="https://x/media/fetch?token=t",
             caption="Body text here #foo", title="Would leak into caption",
             extras={}, poll_timeout_s=5,
@@ -168,7 +168,7 @@ class TestNoTitleForShortFormPlatforms:
         )
 
         up._publish_sync(
-            api_key="k", user="Namhya", target_platform="youtube",
+            api_key="k", user="MyBrand", target_platform="youtube",
             video_url="https://x/media/fetch?token=t",
             caption="Body text", title="Real YouTube Title",
             extras={}, poll_timeout_s=5,
@@ -234,70 +234,70 @@ class TestResolvePublishPlatform:
     def test_upload_post_beats_zernio(self, tmp_path, monkeypatch):
         configs = tmp_path / "configs"
         configs.mkdir()
-        self._write_brand(configs, "nmahya", {
-            "upload_post_tiktok": {"enabled": True, "user": "Namhya"},
+        self._write_brand(configs, "drive_brand", {
+            "upload_post_tiktok": {"enabled": True, "user": "MyBrand"},
             "zernio_tiktok":      {"enabled": True, "account_id": "z1"},
             "tiktok":             {"enabled": True},
         })
         monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
-        monkeypatch.setenv("DEFAULT_BRAND_ID", "nmahya")
+        monkeypatch.setenv("DEFAULT_BRAND_ID", "drive_brand")
 
         from glitch_signal import config as cfg
         cfg.settings.cache_clear()
         cfg._reset_brand_registry_for_tests()
 
-        assert cfg.resolve_publish_platform("nmahya", "tiktok") == "upload_post_tiktok"
+        assert cfg.resolve_publish_platform("drive_brand", "tiktok") == "upload_post_tiktok"
 
     def test_falls_back_to_zernio(self, tmp_path, monkeypatch):
         configs = tmp_path / "configs"
         configs.mkdir()
-        self._write_brand(configs, "nmahya", {
+        self._write_brand(configs, "drive_brand", {
             "upload_post_tiktok": {"enabled": False},
             "zernio_tiktok":      {"enabled": True, "account_id": "z1"},
             "tiktok":             {"enabled": True},
         })
         monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
-        monkeypatch.setenv("DEFAULT_BRAND_ID", "nmahya")
+        monkeypatch.setenv("DEFAULT_BRAND_ID", "drive_brand")
 
         from glitch_signal import config as cfg
         cfg.settings.cache_clear()
         cfg._reset_brand_registry_for_tests()
 
-        assert cfg.resolve_publish_platform("nmahya", "tiktok") == "zernio_tiktok"
+        assert cfg.resolve_publish_platform("drive_brand", "tiktok") == "zernio_tiktok"
 
     def test_falls_back_to_direct(self, tmp_path, monkeypatch):
         configs = tmp_path / "configs"
         configs.mkdir()
-        self._write_brand(configs, "nmahya", {
+        self._write_brand(configs, "drive_brand", {
             "upload_post_tiktok": {"enabled": False},
             "zernio_tiktok":      {"enabled": False},
             "tiktok":             {"enabled": True},
         })
         monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
-        monkeypatch.setenv("DEFAULT_BRAND_ID", "nmahya")
+        monkeypatch.setenv("DEFAULT_BRAND_ID", "drive_brand")
 
         from glitch_signal import config as cfg
         cfg.settings.cache_clear()
         cfg._reset_brand_registry_for_tests()
 
-        assert cfg.resolve_publish_platform("nmahya", "tiktok") == "tiktok"
+        assert cfg.resolve_publish_platform("drive_brand", "tiktok") == "tiktok"
 
     def test_raises_when_nothing_enabled(self, tmp_path, monkeypatch):
         configs = tmp_path / "configs"
         configs.mkdir()
-        self._write_brand(configs, "nmahya", {
+        self._write_brand(configs, "drive_brand", {
             "tiktok":             {"enabled": False},
             "upload_post_tiktok": {"enabled": False},
         })
         monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
-        monkeypatch.setenv("DEFAULT_BRAND_ID", "nmahya")
+        monkeypatch.setenv("DEFAULT_BRAND_ID", "drive_brand")
 
         from glitch_signal import config as cfg
         cfg.settings.cache_clear()
         cfg._reset_brand_registry_for_tests()
 
         with pytest.raises(RuntimeError, match="no enabled publisher"):
-            cfg.resolve_publish_platform("nmahya", "tiktok")
+            cfg.resolve_publish_platform("drive_brand", "tiktok")
 
 
 class TestPublisherRoutesUploadPost:
@@ -320,8 +320,8 @@ class TestPublisherRoutesUploadPost:
         cfg.settings.cache_clear()
 
         post_id, url = await publisher._publish_to_platform(
-            "upload_post_tiktok", "/x.mp4", "s1", brand_id="nmahya"
+            "upload_post_tiktok", "/x.mp4", "s1", brand_id="drive_brand"
         )
         assert post_id == "up-stub-id"
         assert url == "https://www.tiktok.com/@x/video/1"
-        assert captured == {"platform": "upload_post_tiktok", "brand_id": "nmahya"}
+        assert captured == {"platform": "upload_post_tiktok", "brand_id": "drive_brand"}

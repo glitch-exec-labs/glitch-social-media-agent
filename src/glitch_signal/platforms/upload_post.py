@@ -17,7 +17,7 @@ Platform-key convention mirrors zernio_*:
 
 Per-brand config lives under platforms.upload_post_<target> and must carry:
   - enabled: true
-  - user: <Upload-Post profile username, e.g. "Namhya">
+  - user: <Upload-Post profile username, e.g. "MyBrand">
 
 DISPATCH_MODE=dry_run short-circuits without calling the SDK.
 """
@@ -207,7 +207,7 @@ def _poll_until_done(
       - status poll timed out (publish may still complete later)
       - Upload-Post's response doesn't include a per-platform result block
 
-    Upload-Post status shape (observed 2026-04-17):
+    Upload-Post status shape:
       {
         "status": "completed",
         "completed": 1, "total": 1,
@@ -215,8 +215,8 @@ def _poll_until_done(
           {
             "platform": "tiktok",
             "success": true,
-            "platform_post_id": "7629763358610574613",
-            "post_url": "https://www.tiktok.com/@.../video/7629763358610574613",
+            "platform_post_id": "<platform-native post id>",
+            "post_url": "<full share URL>",
             ...
           }
         ]

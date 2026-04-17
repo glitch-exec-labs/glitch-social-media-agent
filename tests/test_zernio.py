@@ -40,7 +40,7 @@ class TestZernioDryRun:
             platform="zernio_tiktok",
             file_path="/does/not/matter.mp4",
             script_id="s1",
-            brand_id="nmahya",
+            brand_id="drive_brand",
         )
         assert publish_id.startswith("zernio-dry-")
         assert url is None
@@ -59,7 +59,7 @@ class TestZernioDryRun:
                 platform="zernio_tiktok",
                 file_path="/tmp/x.mp4",
                 script_id="s",
-                brand_id="nmahya",
+                brand_id="drive_brand",
             )
 
     @pytest.mark.asyncio
@@ -76,7 +76,7 @@ class TestZernioDryRun:
                 platform="zernio_bogus",
                 file_path="/tmp/x.mp4",
                 script_id="s",
-                brand_id="nmahya",
+                brand_id="drive_brand",
             )
 
 
@@ -100,11 +100,11 @@ class TestPublisherRoutesZernio:
         cfg.settings.cache_clear()
 
         post_id, url = await publisher._publish_to_platform(
-            "zernio_tiktok", "/x.mp4", "s1", brand_id="nmahya"
+            "zernio_tiktok", "/x.mp4", "s1", brand_id="drive_brand"
         )
         assert post_id == "zernio-stub-id"
         assert url == "https://tiktok.com/@x/video/1"
-        assert captured == {"platform": "zernio_tiktok", "brand_id": "nmahya"}
+        assert captured == {"platform": "zernio_tiktok", "brand_id": "drive_brand"}
 
 
 class TestSignedMediaUrl:

@@ -88,8 +88,8 @@ class TestDriveScoutNode:
         configs = tmp_path / "configs"
         configs.mkdir()
         (configs / "glitch_executor.json").write_text(_minimal_brand_json("glitch_executor"))
-        (configs / "nmahya.json").write_text(_minimal_brand_json(
-            "nmahya",
+        (configs / "drive_brand.json").write_text(_minimal_brand_json(
+            "drive_brand",
             content_source="drive_footage",
             drive_folder_id="FOLDER_XYZ",
         ))
@@ -125,20 +125,20 @@ class TestDriveScoutNode:
         await _make_memory_db()
 
         from glitch_signal.agent.nodes.drive_scout import drive_scout_node
-        state = await drive_scout_node({"brand_id": "nmahya"})
+        state = await drive_scout_node({"brand_id": "drive_brand"})
 
         assert state.get("error") is None, state.get("error")
-        assert state["brand_id"] == "nmahya"
+        assert state["brand_id"] == "drive_brand"
         assert len(state["signals"]) == 2
         assert state["signal_id"]  # first new signal promoted
         assert state["platform"] == "tiktok"
 
         # Files downloaded under the expected layout
-        assert (tmp_path / "videos" / "drive" / "nmahya" / "F1.mp4").exists()
-        assert (tmp_path / "videos" / "drive" / "nmahya" / "F2.mov").exists()
+        assert (tmp_path / "videos" / "drive" / "drive_brand" / "F1.mp4").exists()
+        assert (tmp_path / "videos" / "drive" / "drive_brand" / "F2.mov").exists()
 
         # Re-running yields zero new signals (dedup by source_ref)
-        state2 = await drive_scout_node({"brand_id": "nmahya"})
+        state2 = await drive_scout_node({"brand_id": "drive_brand"})
         assert state2["signals"] == []
 
     @pytest.mark.asyncio
@@ -168,14 +168,14 @@ class TestCaptionWriterNode:
     async def test_writes_content_script_and_asset(self, tmp_path, monkeypatch):
         configs = tmp_path / "configs"
         configs.mkdir()
-        (configs / "nmahya.json").write_text(_minimal_brand_json(
-            "nmahya",
+        (configs / "drive_brand.json").write_text(_minimal_brand_json(
+            "drive_brand",
             content_source="drive_footage",
             drive_folder_id="FOLDER_XYZ",
-            default_hashtags=["#ayurveda", "#nmahya"],
+            default_hashtags=["#tag1", "#brand"],
         ))
         monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
-        monkeypatch.setenv("DEFAULT_BRAND_ID", "nmahya")
+        monkeypatch.setenv("DEFAULT_BRAND_ID", "drive_brand")
         monkeypatch.setenv("VIDEO_STORAGE_PATH", str(tmp_path / "videos"))
 
         from glitch_signal import config as cfg
@@ -194,7 +194,7 @@ class TestCaptionWriterNode:
         async with factory() as session:
             session.add(Signal(
                 id=sig_id,
-                brand_id="nmahya",
+                brand_id="drive_brand",
                 source="drive",
                 source_ref="F1",
                 summary="Drive clip: clip_a.mp4",
@@ -205,18 +205,18 @@ class TestCaptionWriterNode:
             await session.commit()
 
         # Drop a fake local file so _probe_duration has something (it'll just return 0 without ffmpeg — fine).
-        local = tmp_path / "videos" / "drive" / "nmahya" / "F1.mp4"
+        local = tmp_path / "videos" / "drive" / "drive_brand" / "F1.mp4"
         local.parent.mkdir(parents=True, exist_ok=True)
         local.write_bytes(b"mock")
 
         # Mock the LLM call so caption_writer doesn't try to hit Gemini.
         from unittest.mock import AsyncMock, patch
-        mock_resp = type("R", (), {"choices": [type("C", (), {"message": type("M", (), {"content": '{"title": "Golden hour root", "caption": "A moment with the root.\\n\\n#ayurveda #nmahya", "hashtags": ["ayurveda", "nmahya"]}'})()})()]})()
+        mock_resp = type("R", (), {"choices": [type("C", (), {"message": type("M", (), {"content": '{"title": "Golden hour root", "caption": "A moment with the root.\\n\\n#tag1 #brand", "hashtags": ["tag1", "brand"]}'})()})()]})()
 
         from glitch_signal.agent.nodes.caption_writer import caption_writer_node
         with patch("glitch_signal.agent.nodes.caption_writer.litellm.acompletion", new=AsyncMock(return_value=mock_resp)):
             state = await caption_writer_node({
-                "brand_id": "nmahya",
+                "brand_id": "drive_brand",
                 "signal_id": sig_id,
                 "platform": "tiktok",
                 "signals": [{"id": sig_id, "local_path": str(local)}],
@@ -227,7 +227,7 @@ class TestCaptionWriterNode:
         assert state["asset_id"]
         # LLM output flows through, not a dry-run fallback.
         assert "A moment with the root." in state["script_body"]
-        assert "#ayurveda" in state["script_body"]
+        assert "#tag1" in state["script_body"]
 
         # Confirm both rows landed with the right brand_id
         from sqlmodel import select
@@ -236,8 +236,8 @@ class TestCaptionWriterNode:
         async with factory() as session:
             cs_rows = (await session.execute(select(ContentScript))).scalars().all()
             va_rows = (await session.execute(select(VideoAsset))).scalars().all()
-        assert len(cs_rows) == 1 and cs_rows[0].brand_id == "nmahya"
-        assert len(va_rows) == 1 and va_rows[0].brand_id == "nmahya"
+        assert len(cs_rows) == 1 and cs_rows[0].brand_id == "drive_brand"
+        assert len(va_rows) == 1 and va_rows[0].brand_id == "drive_brand"
         assert va_rows[0].assembler_version.startswith("drive_passthrough")
 
 
