@@ -128,12 +128,46 @@ async def publish(scheduled_post_id: str) -> None:
         session.add(pub)
         await session.commit()
 
+        # Resolve the Drive filename via signal to update the sheet by key.
+        video_name = await _resolve_drive_filename_for_asset(session, sp.asset_id if sp else None)
+
+    # Sheet tracker update — posted status + TikTok URL. Done after the
+    # DB commit so the DB truth is authoritative even if Sheets is down.
+    if video_name and sp:
+        from glitch_signal.integrations import sheet_tracker
+        await sheet_tracker.update_by_video_name(
+            sp.brand_id,
+            video_name,
+            {
+                "status": "posted",
+                "posted_at": pub.published_at.isoformat(timespec="seconds"),
+                "tiktok_url": platform_url or "",
+            },
+        )
+
     log.info(
         "publisher.done",
         scheduled_post_id=scheduled_post_id,
         platform_post_id=platform_post_id,
         url=platform_url,
     )
+
+
+async def _resolve_drive_filename_for_asset(session, asset_id: str | None) -> str | None:
+    """Walk asset → script → signal to find the original Drive filename, if any."""
+    if not asset_id:
+        return None
+    from glitch_signal.db.models import ContentScript, Signal
+    asset = await session.get(VideoAsset, asset_id)
+    if not asset or not asset.script_id:
+        return None
+    cs = await session.get(ContentScript, asset.script_id)
+    if not cs or not cs.signal_id:
+        return None
+    sig = await session.get(Signal, cs.signal_id)
+    if not sig or sig.source != "drive":
+        return None
+    return sig.summary.replace("Drive clip: ", "", 1)
 
 
 async def _publish_to_platform(

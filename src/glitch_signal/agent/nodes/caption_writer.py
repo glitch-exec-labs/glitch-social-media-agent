@@ -127,6 +127,17 @@ async def caption_writer_node(state: SignalAgentState) -> SignalAgentState:
         session.add(signal)
         await session.commit()
 
+    # Push caption + "captioned" status to the brand's tracker sheet
+    # (no-op when no sheet is configured on the brand).
+    from glitch_signal.integrations import sheet_tracker
+    if signal.source == "drive":
+        video_name = signal.summary.replace("Drive clip: ", "", 1)
+        await sheet_tracker.update_by_video_name(
+            brand_id,
+            video_name,
+            {"caption": caption, "status": "captioned"},
+        )
+
     log.info(
         "caption_writer.done",
         brand_id=brand_id,
@@ -194,6 +205,13 @@ async def _generate_caption(
                 signal_id=signal.id,
                 bytes=local_path.stat().st_size if local_path.exists() else 0,
             )
+    elif mode == "rules_based":
+        data = await _generate_via_rules_based(
+            signal=signal,
+            system_prompt=system_prompt,
+            user_context=user_context,
+            catalog_path=cw_cfg.get("product_catalog_path"),
+        )
 
     if not data:
         data = await _generate_via_filename(
@@ -217,6 +235,79 @@ async def _generate_caption(
         hashtags = fallback_tags
 
     return title, caption, hashtags
+
+
+async def _generate_via_rules_based(
+    *,
+    signal: Signal,
+    system_prompt: str,
+    user_context: str,
+    catalog_path: str | None,
+) -> dict:
+    """Rules-based caption: parse filename + inject brand catalog into the prompt.
+
+    Cheap — same Gemini Flash tier as filename mode — but the LLM is
+    handed a structured parse of the filename (product, ad_num, geo,
+    variant tags) and the brand's product catalog. Output stays on-brand
+    and avoids the regulatory landmines a free-text prompt can trip.
+    """
+    from glitch_signal.media.filename_parser import parse as parse_filename
+
+    filename = signal.summary.replace("Drive clip: ", "", 1)
+    parsed = parse_filename(filename)
+
+    catalog_text = ""
+    if catalog_path:
+        p = pathlib.Path(catalog_path)
+        if not p.is_absolute():
+            p = pathlib.Path.cwd() / catalog_path
+        if p.exists():
+            catalog_text = p.read_text().strip()
+        else:
+            log.warning("caption_writer.catalog_missing", path=str(p))
+
+    parsed_block = (
+        f"Parsed filename:\n"
+        f"  product: {parsed.product or '(unparsed — use generic Ayurvedic framing)'}\n"
+        f"  ad_num:  {parsed.ad_num if parsed.ad_num is not None else '(n/a)'}\n"
+        f"  geo:     {parsed.geo or '(n/a)'}\n"
+        f"  variant_tags: {list(parsed.variant_tags) or '(none)'}\n"
+        f"  variant_group: {parsed.variant_group}\n"
+    )
+
+    full_user = (
+        f"{user_context}\n\n"
+        f"{parsed_block}\n"
+        + (f"Brand catalog + rules:\n---\n{catalog_text}\n---\n\n" if catalog_text else "")
+        + "Write the post using the parsed fields + catalog. Follow the hard "
+          "rules in the catalog exactly — never claim cure/treat/prevent, "
+          "never invent results. If the parsed product has no direct SKU, "
+          "use the fallback framing listed in the catalog."
+    )
+
+    mc = pick("cheap")
+    raw_content = ""
+    try:
+        resp = await litellm.acompletion(
+            model=mc.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": full_user},
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=4096,
+            **mc.kwargs,
+        )
+        raw_content = resp.choices[0].message.content or ""
+        return _parse_caption_json(raw_content)
+    except Exception as exc:
+        log.warning(
+            "caption_writer.rules_based_failed",
+            error=str(exc),
+            raw_preview=raw_content[:200] if raw_content else "",
+            filename=filename,
+        )
+        return {}
 
 
 async def _generate_via_filename(*, system_prompt: str, user_context: str) -> dict:

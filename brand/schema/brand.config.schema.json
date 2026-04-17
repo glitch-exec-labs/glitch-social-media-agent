@@ -185,12 +185,16 @@
     "caption_writer": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Controls how the drive_footage pipeline writes captions. In filename mode (default) the LLM captions from the Drive file name only — cheap but generic. In vision mode the actual video bytes are uploaded to Gemini 2.5 Pro and the caption is grounded in on-screen content — ~$0.02-0.05 per 30s clip, ~10-30s latency, dramatically higher quality.",
+      "description": "Controls how the drive_footage pipeline writes captions. filename = LLM reads just the Drive file name (cheap, generic). rules_based = LLM is given a parsed-filename + the brand's product catalog + a strict rules block (cheap, on-brand, no vision cost). vision = uploads the actual video bytes to Gemini 2.5 Pro for the most grounded caption (paid per clip, slower).",
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["filename", "vision"],
+          "enum": ["filename", "rules_based", "vision"],
           "default": "filename"
+        },
+        "product_catalog_path": {
+          "type": ["string", "null"],
+          "description": "Required for rules_based mode. Path (relative to repo root) to a markdown file listing the brand's SKUs, ingredients, and claims. Injected into the caption prompt."
         },
         "vision_model": {
           "type": "string",
@@ -200,6 +204,50 @@
           "type": "boolean",
           "default": true,
           "description": "If the vision call fails (API error, quota, processing timeout), fall back to filename-mode captioning so the pipeline still produces a caption rather than failing the Signal."
+        }
+      }
+    },
+    "tasks": {
+      "type": "object",
+      "description": "Per-brand task registry. Each key is a task name (video_uploader, comment_responder, metrics_report, …) and the value describes its configuration + outputs. Adding a new brand or task = adding a new entry here; the code walks the registry at runtime.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "enabled": {"type": "boolean"},
+          "posting_rules": {
+            "type": "object",
+            "description": "Applies to video_uploader-shaped tasks. Constrains when and in what order scheduled posts may fire.",
+            "additionalProperties": true,
+            "properties": {
+              "daily_cap":        {"type": "integer", "minimum": 0},
+              "slots_local":      {
+                "type": "array",
+                "items": {"type": "string", "pattern": "^\\d{1,2}:\\d{2}$"},
+                "description": "HH:MM times in the brand's timezone when posts are allowed to fire. Empty = no slot constraint."
+              },
+              "min_interval_minutes": {"type": "integer", "minimum": 0},
+              "variant_gap":      {"type": "integer", "minimum": 0, "description": "Min posts between two files in the same variant_group (from filename parser)."},
+              "product_gap":      {"type": "integer", "minimum": 0, "description": "Min posts between two files of the same product."},
+              "skip_patterns":    {"type": "array", "items": {"type": "string"}, "description": "Substrings (case-insensitive). Files whose raw filename contains ANY of these are skipped."},
+              "order":            {"type": "string", "enum": ["oldest_first", "newest_first"], "default": "oldest_first"}
+            }
+          },
+          "outputs": {
+            "type": "object",
+            "description": "Sinks the task writes to in addition to publishing. Multiple outputs may coexist.",
+            "additionalProperties": true,
+            "properties": {
+              "google_sheet": {
+                "type": "object",
+                "properties": {
+                  "sheet_id":  {"type": "string"},
+                  "worksheet": {"type": "string", "default": "Sheet1"}
+                },
+                "required": ["sheet_id"]
+              }
+            }
+          }
         }
       }
     },
