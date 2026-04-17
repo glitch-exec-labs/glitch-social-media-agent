@@ -1,6 +1,6 @@
 """Parse structured fields out of client-supplied Drive filenames.
 
-The Namhya Drive folder is seeded with Meta-ad variants — many files are
+The client Drive folder is seeded with Meta-ad variants — many files are
 near-duplicates that share a base creative. We parse the filename to
 pull out:
 
@@ -8,7 +8,7 @@ pull out:
   - ad_num       the underlying Meta ad number (ad1, ad15, ad20, ...)
   - geo          target market (uk, uae, us)
   - variant_tag  the visible differentiator (var1, h1, headings2, v3, ...)
-  - editor       the person who cut the file (alshifa, aakash, sharmistha)
+  - editor       the person who cut the file (brand-specific, from config)
 
 A `variant_group` key is the join of product + ad_num + geo — all files
 sharing that key are near-visual-duplicates of the same Meta ad, and
@@ -60,7 +60,11 @@ _PRODUCT_ALIASES = {
 
 _GEOS = ("uk", "uae", "usa", "us")
 
-_EDITORS = ("alshifa", "aakash", "sharmistha")
+# Editor names are brand-specific and not committed. Brands with an
+# editor-in-filename convention can inject their list at parse time by
+# calling `parse(filename, editors=("...",))`. Leave empty for brands
+# that don't tag editors or whose team names shouldn't live in repo.
+_EDITORS: tuple[str, ...] = ()
 
 # Variant-tag patterns. Each may appear zero or more times in a filename.
 # We capture the full match (e.g. "var3", "h1", "headings2", "v1",
@@ -90,7 +94,7 @@ class ParsedFilename:
     product: str | None        # canonical product key, e.g. "liver"
     ad_num: int | None         # ad number, e.g. 15
     geo: str | None            # "uk", "uae", "us", or None
-    editor: str | None         # "alshifa", "aakash", "sharmistha", or None
+    editor: str | None         # editor tag if matched against parse()'s `editors` arg
     variant_tags: tuple[str, ...]   # tuple to stay hashable
     variant_group: str         # composite key used for rotation
 
@@ -107,7 +111,7 @@ class ParsedFilename:
         return " · ".join(parts) or self.stem
 
 
-def parse(filename: str) -> ParsedFilename:
+def parse(filename: str, *, editors: tuple[str, ...] = _EDITORS) -> ParsedFilename:
     """Break a raw Drive filename into its structured pieces."""
     raw = filename
     # DON'T use pathlib.Path.stem — several client filenames contain
@@ -145,7 +149,7 @@ def parse(filename: str) -> ParsedFilename:
                 ad_num = glued_num
 
     geo = _extract_geo(normalized_for_match)
-    editor = _extract_first(normalized_for_match, _EDITORS)
+    editor = _extract_first(normalized_for_match, editors)
 
     variant_tags = tuple(
         _normalise_variant_tag(m.group(0))

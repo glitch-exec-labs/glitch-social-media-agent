@@ -438,7 +438,7 @@ transform applies whether the brand posts via `upload_post_tiktok`,
 Transforms available today:
 
 - **`strip_audio`** — `-c:v copy -an` remux. Drops the audio track.
-  Used for Namhya (source Drive footage carries licensed music, which
+  Used for client brands (source Drive footage carries licensed music, which
   triggers TikTok's web-player mute on Content-ID match — a silent
   upload plays fine on web and on the app).
 
@@ -562,7 +562,7 @@ Share the sheet with `GOOGLE_DRIVE_SA_JSON`'s service account email
 in the brand's actual SKUs and avoids regulatory landmines.
 
 Catalog path set via `caption_writer.product_catalog_path`. See
-`brand/prompts/nmahya_products.md` for the reference shape.
+`brand/prompts/<brand_id>_products.md` for the reference shape.
 
 ---
 

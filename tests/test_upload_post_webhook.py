@@ -93,7 +93,7 @@ class TestUploadCompleted:
                 ))
                 session.add(ScheduledPost(
                     id=sp_id,
-                    brand_id="nmahya",
+                    brand_id="drive_brand",
                     asset_id=asset_id,
                     platform="upload_post_tiktok",
                     scheduled_for=now,
@@ -106,7 +106,7 @@ class TestUploadCompleted:
             event = {
                 "event": "upload_completed",
                 "job_id": request_id,
-                "user": "Namhya",
+                "user": "MyBrand",
                 "platform": "tiktok",
                 "results": [{
                     "platform": "tiktok",
@@ -163,7 +163,7 @@ class TestUploadCompleted:
                 ))
                 session.add(ScheduledPost(
                     id=sp_id,
-                    brand_id="nmahya",
+                    brand_id="drive_brand",
                     asset_id=asset_id,
                     platform="upload_post_tiktok",
                     scheduled_for=now,
@@ -220,7 +220,7 @@ class TestUploadCompleted:
                 ))
                 session.add(ScheduledPost(
                     id=sp_id,
-                    brand_id="nmahya",
+                    brand_id="drive_brand",
                     asset_id=asset_id,
                     platform="upload_post_tiktok",
                     scheduled_for=now,
@@ -287,7 +287,7 @@ class TestAccountEvents:
             async with factory() as session:
                 session.add(PlatformAuth(
                     id=pa_id,
-                    brand_id="nmahya",
+                    brand_id="drive_brand",
                     platform="tiktok",
                     account_identifier="acc-123",
                     access_token_enc="fake",
@@ -299,7 +299,7 @@ class TestAccountEvents:
 
             event = {
                 "event": "social_account_reauth_required",
-                "user": "Namhya",
+                "user": "MyBrand",
                 "platform": "tiktok",
                 "account_id": "acc-123",
                 "reason": "token_refresh_threshold_exceeded",
@@ -326,7 +326,7 @@ class TestAccountEvents:
             async with factory() as session:
                 session.add(PlatformAuth(
                     id=pa_id,
-                    brand_id="nmahya",
+                    brand_id="drive_brand",
                     platform="tiktok",
                     account_identifier="acc-X",
                     access_token_enc="fake",
@@ -486,7 +486,7 @@ class TestReconciliationSweep:
                 # last_attempt_at is 30 min ago → well past reconcile window.
                 session.add(ScheduledPost(
                     id=sp_id,
-                    brand_id="nmahya",
+                    brand_id="drive_brand",
                     asset_id=asset_id,
                     platform="upload_post_tiktok",
                     scheduled_for=now,
@@ -551,7 +551,7 @@ class TestReconciliationSweep:
                 ))
                 session.add(ScheduledPost(
                     id=sp_id,
-                    brand_id="nmahya",
+                    brand_id="drive_brand",
                     asset_id=asset_id,
                     platform="upload_post_tiktok",
                     scheduled_for=now,
@@ -603,7 +603,7 @@ class TestPublisherWebhookPendingSentinel:
                 ))
                 session.add(ScheduledPost(
                     id=sp_id,
-                    brand_id="nmahya",
+                    brand_id="drive_brand",
                     asset_id=asset_id,
                     platform="upload_post_tiktok",
                     scheduled_for=now,

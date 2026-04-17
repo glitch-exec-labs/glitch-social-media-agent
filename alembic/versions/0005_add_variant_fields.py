@@ -4,7 +4,7 @@ Revision ID: 0005
 Revises: 0004
 Create Date: 2026-04-17
 
-The Namhya rollout needs the scheduler to pick ScheduledPost rows in a
+The drive-footage rollout needs the scheduler to pick ScheduledPost rows in a
 way that doesn't put near-visual-duplicates back-to-back on the TikTok
 grid. Parsing the filename at pick time costs N joins per tick; instead
 we denormalise the parsed fields (variant_group, product, geo) onto

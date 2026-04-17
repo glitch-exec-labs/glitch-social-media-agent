@@ -75,11 +75,11 @@ TransformBuilder = Callable[[pathlib.Path, pathlib.Path], list[str]]
 def _strip_audio(input_path: pathlib.Path, output_path: pathlib.Path) -> list[str]:
     """Remux to the same video with the audio track removed.
 
-    Used for Namhya / similar brands whose source videos carry licensed
+    Used for drive-footage brands whose source videos carry licensed
     music (Meta Ads Library exports). TikTok's web player mutes any
     video with a Content-ID match, but a silent upload is watched fine.
     The mobile app plays the original music for matched content — but
-    only ~20% of Namhya viewers are on web, not worth splitting publishes.
+    most viewers are on mobile, not worth splitting publishes.
 
     `-c:v copy` does zero re-encoding — this runs in a fraction of a
     second for a 30s clip.

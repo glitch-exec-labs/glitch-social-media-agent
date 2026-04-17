@@ -152,7 +152,7 @@ class TestSweepEligibility:
 
         configs = tmp_path / "configs"
         configs.mkdir()
-        _write_brand(configs, "bnd", user="Namhya")
+        _write_brand(configs, "bnd", user="MyBrand")
         monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
         monkeypatch.setenv("DEFAULT_BRAND_ID", "bnd")
         monkeypatch.setenv("UPLOAD_POST_API_KEY", "k")
@@ -190,7 +190,7 @@ class TestSweepEligibility:
 
             updated = await sweep_due_posts()
             assert updated == [pp_id]
-            assert captured == {"ppid": "76297", "platform": "tiktok", "user": "Namhya"}
+            assert captured == {"ppid": "76297", "platform": "tiktok", "user": "MyBrand"}
 
             async with factory() as session:
                 from sqlalchemy import select

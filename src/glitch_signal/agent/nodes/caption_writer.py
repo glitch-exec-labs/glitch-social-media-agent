@@ -241,7 +241,7 @@ async def _acompletion_with_retry(**kwargs) -> object:
     """Call litellm.acompletion with exponential backoff on transient errors.
 
     Gemini (our `cheap` tier) routinely returns 503 ServiceUnavailable
-    during high-demand windows — observed during the Namhya preview run
+    during high-demand windows — observed during a drive-footage preview run
     on 2026-04-17 where consecutive caption calls hit 503 over a span
     of ~2 minutes. A single try would fall straight back to the caption
     writer's fail-soft template; with backoff the first attempt after

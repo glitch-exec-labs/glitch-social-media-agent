@@ -6,7 +6,7 @@ shaped like (observed from their docs + SDK echoes):
     {
       "event": "upload_completed",          # or "event_type"
       "job_id": "<request_id>",              # sometimes "request_id"
-      "user": "Namhya",
+      "user": "MyBrand",
       "platform": "tiktok",                  # or nested inside `results`
       "results": [
         {"platform": "tiktok", "success": true,

@@ -57,11 +57,11 @@ class TestRulesBasedRouting:
         from glitch_signal.agent.nodes import caption_writer as cw
 
         configs, catalog_path = _write_brand_with_catalog(
-            tmp_path, "nmahya_test",
-            "# Namhya catalog\n- Liver Cleanse Tea\n- hard rule: never claim cure",
+            tmp_path, "drive_test",
+            "# Brand catalog\n- Liver Cleanse Tea\n- hard rule: never claim cure",
         )
         monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
-        monkeypatch.setenv("DEFAULT_BRAND_ID", "nmahya_test")
+        monkeypatch.setenv("DEFAULT_BRAND_ID", "drive_test")
         cfg.settings.cache_clear()
         cfg._reset_brand_registry_for_tests()
 
@@ -77,7 +77,7 @@ class TestRulesBasedRouting:
 
         title, caption, tags = await cw._generate_caption(
             _FakeSignal("Liver_ad15_UK_h1_9.4.26.mp4"),
-            "nmahya_test", "tiktok", local_path=None,
+            "drive_test", "tiktok", local_path=None,
         )
         assert title == "T"
         assert tags == ["a", "b"]
