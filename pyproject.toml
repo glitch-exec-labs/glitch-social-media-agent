@@ -23,11 +23,6 @@ classifiers = [
   "Framework :: AsyncIO",
 ]
 
-[project.urls]
-Homepage = "https://glitchexecutor.com"
-Repository = "https://github.com/glitch-exec-labs/glitch-social-media-agent"
-Issues = "https://github.com/glitch-exec-labs/glitch-social-media-agent/issues"
-
 dependencies = [
   # Web / server
   "fastapi>=0.115",
@@ -76,6 +71,16 @@ dev = [
   "ruff>=0.7",
   "mypy>=1.13",
 ]
+
+# NOTE: [project.urls] MUST come after `dependencies` and
+# `[project.optional-dependencies]`. Otherwise, per the TOML spec, the
+# unqualified `dependencies` key would be parsed as `project.urls.dependencies`,
+# which newer Hatchling versions (>= ~1.24) reject with:
+#   TypeError: URL `dependencies` of field `project.urls` must be a string
+[project.urls]
+Homepage = "https://glitchexecutor.com"
+Repository = "https://github.com/glitch-exec-labs/glitch-social-media-agent"
+Issues = "https://github.com/glitch-exec-labs/glitch-social-media-agent/issues"
 
 [build-system]
 requires = ["hatchling"]
