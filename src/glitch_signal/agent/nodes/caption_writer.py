@@ -6,6 +6,18 @@ local file — bypassing storyboard / video generation / assembler entirely.
 
 Voice guide: brand config's `voice_prompt_path` (a markdown file, gitignored)
 provides the per-brand style. Falls back to a neutral default when absent.
+
+Two captioning modes, switchable per brand via
+`caption_writer.mode` in the brand config:
+
+- `filename` (default) — captions from the Drive file name only. Cheap
+  (Gemini Flash, fractions of a cent per caption) but generic.
+- `vision` — uploads the actual video to Gemini 2.5 Pro and writes the
+  caption grounded in on-screen content. Roughly $0.02-0.05 per 30s clip
+  and 10-30s of latency. Dramatically better specificity — the difference
+  between "another ayurvedic oil post" and "hair massage demo with
+  brahmi-infused oil on a wooden comb". On failure, falls back to
+  filename mode so the pipeline never stalls on vendor hiccups.
 """
 from __future__ import annotations
 
@@ -78,7 +90,9 @@ async def caption_writer_node(state: SignalAgentState) -> SignalAgentState:
         # to the conventional location.
         local_path = _resolve_local_path(state, signal, brand_id)
 
-        title, caption, hashtags = await _generate_caption(signal, brand_id, platform)
+        title, caption, hashtags = await _generate_caption(
+            signal, brand_id, platform, local_path=local_path
+        )
 
         script_id = str(uuid.uuid4())
         asset_id = str(uuid.uuid4())
@@ -136,65 +150,62 @@ async def caption_writer_node(state: SignalAgentState) -> SignalAgentState:
 
 
 async def _generate_caption(
-    signal: Signal, brand_id: str, platform: str
+    signal: Signal, brand_id: str, platform: str,
+    local_path: pathlib.Path | None = None,
 ) -> tuple[str, str, list[str]]:
     cfg = brand_config(brand_id)
     display_name = cfg.get("display_name", brand_id)
     voice = _load_voice(cfg) or _DEFAULT_VOICE
     default_hashtags: list[str] = cfg.get("default_hashtags") or []
+    cw_cfg = (cfg.get("caption_writer") or {})
+    mode = cw_cfg.get("mode", "filename")
 
-    # DISPATCH_MODE gates PUBLISH actions (posting to TikTok, sending emails,
-    # etc.), NOT every LLM call. Caption generation is cheap, text-only,
-    # and exactly what the operator needs to review during dry-run —
-    # skipping it leaves them previewing template fallback captions that
-    # don't reflect the real system behaviour.
-    #
-    # The previous implementation hard-coded tier="smart" (Claude Sonnet)
-    # which requires an Anthropic key. For caption writing the cost/quality
-    # trade-off doesn't justify Sonnet — tier="cheap" (Gemini Flash) is
-    # the right default since we always have a Google key for the Scout
-    # novelty scorer anyway.
-    mc = pick("cheap")
     system_prompt = _SYSTEM_TEMPLATE.format(display_name=display_name, voice=voice)
-    user_msg = (
+    user_context = (
         f"Platform: {platform}\n"
         f"Drive clip filename: {signal.summary}\n"
         f"Default hashtags to consider: {', '.join(default_hashtags) or '(none)'}\n\n"
         "Write the post."
     )
 
-    raw_content = ""
-    try:
-        resp = await litellm.acompletion(
-            model=mc.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
-            response_format={"type": "json_object"},
-            # Gemini 2.5 Flash counts reasoning ("thinking") tokens against
-            # max_tokens and will silently truncate the visible output when
-            # the ceiling is tight. 4096 comfortably covers a 2000-char
-            # caption plus whatever thinking the model wants to do.
-            max_tokens=4096,
-            **mc.kwargs,
+    data: dict = {}
+    if mode == "vision" and local_path is not None and local_path.exists():
+        try:
+            data = await _generate_via_vision(
+                local_path=local_path,
+                system_prompt=system_prompt,
+                user_context=user_context,
+                model_override=cw_cfg.get("vision_model"),
+            )
+        except Exception as exc:
+            log.warning(
+                "caption_writer.vision_failed",
+                brand_id=brand_id,
+                signal_id=signal.id,
+                error=str(exc)[:300],
+            )
+            if not cw_cfg.get("vision_fallback_to_filename", True):
+                raise
+            data = {}
+        else:
+            log.info(
+                "caption_writer.vision_ok",
+                brand_id=brand_id,
+                signal_id=signal.id,
+                bytes=local_path.stat().st_size if local_path.exists() else 0,
+            )
+
+    if not data:
+        data = await _generate_via_filename(
+            system_prompt=system_prompt, user_context=user_context
         )
-        raw_content = resp.choices[0].message.content or ""
-        data = _parse_caption_json(raw_content)
-    except Exception as exc:
-        log.warning(
-            "caption_writer.llm_failed",
-            error=str(exc),
-            raw_preview=raw_content[:200] if raw_content else "",
-        )
-        data = {}
 
     title = str(data.get("title", "")).strip()[:100] or display_name
     caption = str(data.get("caption", "")).strip()[:2000]
     raw_tags = data.get("hashtags") or []
     hashtags = [str(t).lstrip("#").strip().lower() for t in raw_tags if t]
 
-    # Fail-soft fallback: if the LLM path didn't yield a caption, compose
+    # Fail-soft fallback: if both LLM paths didn't yield a caption, compose
     # one from the brand's default_hashtags (stripping "#" then re-adding
     # so the caption body is correctly prefixed).
     if not caption:
@@ -206,6 +217,104 @@ async def _generate_caption(
         hashtags = fallback_tags
 
     return title, caption, hashtags
+
+
+async def _generate_via_filename(*, system_prompt: str, user_context: str) -> dict:
+    """Filename-only caption path — cheap, text-only, default."""
+    # DISPATCH_MODE gates PUBLISH actions (posting to TikTok, sending emails,
+    # etc.), NOT every LLM call. Caption generation is cheap, text-only,
+    # and exactly what the operator needs to review during dry-run —
+    # skipping it leaves them previewing template fallback captions that
+    # don't reflect the real system behaviour.
+    mc = pick("cheap")
+    raw_content = ""
+    try:
+        resp = await litellm.acompletion(
+            model=mc.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_context},
+            ],
+            response_format={"type": "json_object"},
+            # Gemini 2.5 Flash counts reasoning ("thinking") tokens against
+            # max_tokens and will silently truncate the visible output when
+            # the ceiling is tight. 4096 comfortably covers a 2000-char
+            # caption plus whatever thinking the model wants to do.
+            max_tokens=4096,
+            **mc.kwargs,
+        )
+        raw_content = resp.choices[0].message.content or ""
+        return _parse_caption_json(raw_content)
+    except Exception as exc:
+        log.warning(
+            "caption_writer.llm_failed",
+            error=str(exc),
+            raw_preview=raw_content[:200] if raw_content else "",
+        )
+        return {}
+
+
+async def _generate_via_vision(
+    *,
+    local_path: pathlib.Path,
+    system_prompt: str,
+    user_context: str,
+    model_override: str | None = None,
+) -> dict:
+    """Upload the video to Gemini and caption from on-screen content.
+
+    Uses google-genai's File API so we're not limited by the inline-byte
+    cap. Files auto-expire after 48h on Gemini's side and we call
+    `delete` after use so we don't pile up stale uploads.
+    """
+    import asyncio as _asyncio
+
+    from google import genai
+    from google.genai import types
+
+    s = settings()
+    if not s.google_api_key:
+        raise RuntimeError("caption_writer.vision: GOOGLE_API_KEY is not set")
+
+    model = model_override or "gemini-2.5-pro"
+
+    def _sync_call() -> dict:
+        client = genai.Client(api_key=s.google_api_key)
+        uploaded = client.files.upload(file=str(local_path))
+        try:
+            # File API processes the video asynchronously — wait for ACTIVE.
+            import time as _time
+            deadline = _time.time() + 120   # 2 min ceiling
+            while getattr(uploaded, "state", None) and str(uploaded.state).endswith("PROCESSING"):
+                if _time.time() > deadline:
+                    raise RuntimeError("caption_writer.vision: File API processing timed out")
+                _time.sleep(2)
+                uploaded = client.files.get(name=uploaded.name)
+            if str(getattr(uploaded, "state", "")).endswith("FAILED"):
+                raise RuntimeError(
+                    f"caption_writer.vision: File API processing failed for {local_path.name}"
+                )
+
+            resp = client.models.generate_content(
+                model=model,
+                contents=[uploaded, system_prompt + "\n\n" + user_context],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            raw = getattr(resp, "text", "") or ""
+            return _parse_caption_json(raw)
+        finally:
+            try:
+                client.files.delete(name=uploaded.name)
+            except Exception as exc:
+                log.warning(
+                    "caption_writer.vision_cleanup_failed",
+                    file_name=getattr(uploaded, "name", "<unknown>"),
+                    error=str(exc)[:200],
+                )
+
+    return await _asyncio.to_thread(_sync_call)
 
 
 def _parse_caption_json(raw: str) -> dict:

@@ -182,6 +182,27 @@
         "description": "Ordered transform chain — outputs of step N feed step N+1. Each result is cached next to the source file so rerunning the pipeline is a no-op."
       }
     },
+    "caption_writer": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Controls how the drive_footage pipeline writes captions. In filename mode (default) the LLM captions from the Drive file name only — cheap but generic. In vision mode the actual video bytes are uploaded to Gemini 2.5 Pro and the caption is grounded in on-screen content — ~$0.02-0.05 per 30s clip, ~10-30s latency, dramatically higher quality.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["filename", "vision"],
+          "default": "filename"
+        },
+        "vision_model": {
+          "type": "string",
+          "description": "Override the default Gemini vision model (defaults to gemini-2.5-pro)."
+        },
+        "vision_fallback_to_filename": {
+          "type": "boolean",
+          "default": true,
+          "description": "If the vision call fails (API error, quota, processing timeout), fall back to filename-mode captioning so the pipeline still produces a caption rather than failing the Signal."
+        }
+      }
+    },
     "default_hashtags": {
       "type": "array",
       "items": {"type": "string"},

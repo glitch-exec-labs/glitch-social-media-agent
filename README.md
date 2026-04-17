@@ -276,6 +276,7 @@ Pipeline per invocation:
 - Download each new file to `{VIDEO_STORAGE_PATH}/drive/<brand_id>/<file_id><ext>`
 - Create `Signal`, promote the first new one through `caption_writer_node`
 - `caption_writer` generates title + caption + hashtags via Gemini Flash using the brand's `voice_prompt_path`
+- Optional **vision mode** (per-brand `caption_writer.mode: "vision"`): uploads the actual video to Gemini 2.5 Pro's File API and captions from on-screen content instead of the filename — ~$0.02-0.05/clip, ~10-30s latency, far more specific captions. Failures transparently fall back to filename mode so the pipeline never stalls.
 - Writes `ContentScript` + `VideoAsset` with `assembler_version="drive_passthrough@1.0"` (bypass marker)
 - Hands off to `telegram_preview` → `publisher`
 
