@@ -566,6 +566,30 @@ Catalog path set via `caption_writer.product_catalog_path`. See
 
 ---
 
+## Media lifecycle (JIT download + post-publish cleanup)
+
+Client Drive footage is transient on our disk:
+
+- **drive_scout** creates a `Signal` row with the expected local path
+  but does NOT download. One cheap Drive `files.list` call per scout
+  run, nothing on disk.
+- **publisher** downloads the file from Drive right before publish
+  (via `_ensure_local_file`), applies any `media_pipeline` ffmpeg
+  transforms, then hands the signed URL to the vendor.
+- **scheduler** sweeps `PublishedPost` rows older than
+  `MEDIA_CLEANUP_AFTER_MINUTES` (default 60) and deletes the local
+  file + any ffmpeg transform siblings (`<stem>.strip_audio.<ext>`).
+
+What survives cleanup: DB audit trail, Drive source (client-owned),
+Google Sheet row (with tiktok_url, posted_at).
+
+What disappears: local mp4 and any transform outputs. Net disk use
+scales with *concurrent posts in flight*, not with brand-queue size.
+
+Set `MEDIA_CLEANUP_AFTER_MINUTES=0` to disable cleanup entirely.
+
+---
+
 ## ORM guardrails
 
 Hard-stop phrases trigger an **immediate Telegram alert and zero automated response** — no LLM involved, pure rule engine:

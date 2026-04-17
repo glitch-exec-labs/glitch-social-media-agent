@@ -63,6 +63,10 @@ async def publish(scheduled_post_id: str) -> None:
 
     try:
         brand_id = getattr(sp, "brand_id", None) or getattr(asset, "brand_id", None)
+        # JIT download — drive_scout no longer pre-downloads; it just
+        # records the expected local path. If the file isn't on disk,
+        # fetch it from Drive now. Re-runs are a no-op once downloaded.
+        await _ensure_local_file(asset)
         # Pre-publish ffmpeg transforms (brand-config driven). Returns the
         # original path unchanged for brands with no `media_pipeline`
         # entry for this platform — zero cost on the common path.
@@ -150,6 +154,61 @@ async def publish(scheduled_post_id: str) -> None:
         scheduled_post_id=scheduled_post_id,
         platform_post_id=platform_post_id,
         url=platform_url,
+    )
+
+
+async def _ensure_local_file(asset: VideoAsset) -> None:
+    """Download the asset's Drive file to its expected local path, if absent.
+
+    drive_scout writes the expected local path to VideoAsset.file_path but
+    (as of the JIT-download refactor) no longer downloads the file eagerly.
+    Publisher calls this right before apply_transforms / upload so the file
+    is on disk exactly when needed and nowhere else.
+
+    For non-Drive-sourced assets (ai_generated pipeline, already-rendered
+    files), the file_path should already exist — this is a no-op.
+    """
+    import pathlib
+
+    from glitch_signal.db.models import ContentScript, Signal
+    from glitch_signal.integrations import google_drive
+
+    if not asset.file_path:
+        return
+    path = pathlib.Path(asset.file_path)
+    if path.exists():
+        return
+
+    # Walk asset → script → signal to find the Drive file_id.
+    factory = _session_factory()
+    async with factory() as session:
+        if not asset.script_id:
+            raise FileNotFoundError(
+                f"publisher.ensure_local_file: {asset.file_path} missing "
+                f"and asset has no script_id to resolve Drive source"
+            )
+        cs = await session.get(ContentScript, asset.script_id)
+        if not cs or not cs.signal_id:
+            raise FileNotFoundError(
+                f"publisher.ensure_local_file: {asset.file_path} missing "
+                f"and can't resolve signal"
+            )
+        sig = await session.get(Signal, cs.signal_id)
+        if not sig or sig.source != "drive" or not sig.source_ref:
+            raise FileNotFoundError(
+                f"publisher.ensure_local_file: {asset.file_path} missing "
+                f"and source is not Drive (source={getattr(sig, 'source', None)})"
+            )
+        drive_file_id = sig.source_ref
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    bytes_written = await google_drive.download_file(drive_file_id, path)
+    log.info(
+        "publisher.jit_downloaded",
+        asset_id=asset.id,
+        file_id=drive_file_id,
+        path=str(path),
+        bytes=bytes_written,
     )
 
 

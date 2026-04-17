@@ -74,8 +74,113 @@ async def _tick() -> None:
         _poll_orm_mentions(),
         _reconcile_awaiting_webhook(),
         _pull_post_analytics(),
+        _cleanup_posted_media(),
         return_exceptions=True,
     )
+
+
+async def _cleanup_posted_media() -> None:
+    """Delete local video files whose post went live > N minutes ago.
+
+    Scope:
+      - Local VideoAsset.file_path (the original download)
+      - ffmpeg transform siblings in the same directory
+        (e.g. <stem>.strip_audio<ext>, <stem>.<any_transform><ext>)
+
+    Does NOT touch:
+      - Drive source files (client-owned)
+      - DB rows (audit trail)
+      - Google Sheet rows (historical visibility)
+
+    Idempotent — running against an already-cleaned PublishedPost is a
+    no-op. Never raises; a filesystem error on one post doesn't block
+    the rest of the batch.
+    """
+    import pathlib
+
+    from glitch_signal.db.models import PublishedPost, VideoAsset
+
+    s = settings()
+    after_s = s.media_cleanup_after_minutes * 60
+    if after_s <= 0:
+        return
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=after_s)
+
+    factory = _session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(PublishedPost)
+            .where(PublishedPost.published_at <= cutoff)
+            .order_by(PublishedPost.published_at.desc())
+            .limit(s.media_cleanup_batch)
+        )
+        posts = result.scalars().all()
+
+    freed_bytes = 0
+    deleted = 0
+    for pub in posts:
+        try:
+            factory = _session_factory()
+            async with factory() as session:
+                sp = await session.get(ScheduledPost, pub.scheduled_post_id)
+                if not sp:
+                    continue
+                asset = await session.get(VideoAsset, sp.asset_id)
+                if not asset or not asset.file_path:
+                    continue
+
+            original = pathlib.Path(asset.file_path)
+            targets: list[pathlib.Path] = []
+            if original.exists():
+                targets.append(original)
+
+            # Transform siblings live in the same directory with a
+            # deterministic suffix. ffmpeg.apply_transforms outputs them
+            # as <stem>.<transform_name>.<ext>. Match the known set to
+            # avoid deleting anything unrelated that happens to share a
+            # stem.
+            parent = original.parent
+            if parent.exists():
+                known_transforms = {"strip_audio"}
+                for p in parent.glob(f"{original.stem}.*{original.suffix}"):
+                    mid = p.stem[len(original.stem) + 1:]
+                    if mid in known_transforms and p.exists():
+                        targets.append(p)
+
+            for t in targets:
+                try:
+                    size = t.stat().st_size
+                    t.unlink()
+                    freed_bytes += size
+                    deleted += 1
+                    log.info(
+                        "scheduler.media_cleaned",
+                        published_post_id=pub.id,
+                        path=str(t),
+                        bytes=size,
+                    )
+                except FileNotFoundError:
+                    pass   # raced with another cleanup / manual delete
+                except OSError as exc:
+                    log.warning(
+                        "scheduler.media_cleanup_error",
+                        published_post_id=pub.id,
+                        path=str(t),
+                        error=str(exc)[:200],
+                    )
+        except Exception as exc:
+            log.warning(
+                "scheduler.media_cleanup_post_error",
+                published_post_id=pub.id,
+                error=str(exc)[:200],
+            )
+
+    if deleted:
+        log.info(
+            "scheduler.media_cleanup_batch",
+            files_deleted=deleted,
+            freed_mb=round(freed_bytes / 1024 / 1024, 1),
+        )
 
 
 async def _pull_post_analytics() -> None:

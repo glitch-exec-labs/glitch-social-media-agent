@@ -134,6 +134,16 @@ class Settings(BaseSettings):
     analytics_pull_interval_s: int = 86_400        # 24 hours
     analytics_sweep_batch: int = 10
 
+    # --- Media cleanup ---
+    # Raw Drive footage is client-owned; we don't need to keep the local
+    # copy after publish. The _cleanup_posted_media scheduler tick deletes
+    # the local file (plus any ffmpeg transform siblings like
+    # .strip_audio.mp4) this many minutes after the PublishedPost is
+    # written. 60 min default = 1 hour grace for re-upload or manual
+    # inspection if anything went sideways.
+    media_cleanup_after_minutes: int = 60
+    media_cleanup_batch: int = 50
+
     # --- Media-serve public base URL ---
     # Zernio fetches videos from this host when posts are published via
     # the zernio_* publishers. An nginx location block on this hostname

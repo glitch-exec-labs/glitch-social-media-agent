@@ -62,8 +62,10 @@ async def drive_scout_node(state: SignalAgentState) -> SignalAgentState:
         return {**state, "brand_id": brand_id, "signals": []}
 
     new_signals: list[dict] = []
+    # We only need the storage root to COMPUTE the expected local path
+    # that publisher.py will download to later. We don't create the file
+    # or the folder eagerly — that's publisher's job at post time.
     storage_root = pathlib.Path(settings().video_storage_path) / "drive" / brand_id
-    storage_root.mkdir(parents=True, exist_ok=True)
 
     factory = _session_factory()
     async with factory() as session:
@@ -71,25 +73,11 @@ async def drive_scout_node(state: SignalAgentState) -> SignalAgentState:
             if await _already_seen(session, brand_id, f.id):
                 continue
 
-            local_path = storage_root / f"{f.id}{pathlib.Path(f.name).suffix.lower() or '.mp4'}"
-            if not local_path.exists():
-                try:
-                    bytes_written = await google_drive.download_file(f.id, local_path)
-                    log.info(
-                        "drive_scout.downloaded",
-                        brand=brand_id,
-                        file_id=f.id,
-                        name=f.name,
-                        bytes=bytes_written,
-                    )
-                except Exception as exc:
-                    log.error(
-                        "drive_scout.download_failed",
-                        brand=brand_id,
-                        file_id=f.id,
-                        error=str(exc),
-                    )
-                    continue
+            # Deterministic local path where publisher.py will download the
+            # Drive file just before posting. Extension follows the Drive
+            # filename (fallback .mp4 for extension-less files).
+            suffix = pathlib.Path(f.name).suffix.lower() or ".mp4"
+            local_path = storage_root / f"{f.id}{suffix}"
 
             sig = Signal(
                 id=str(uuid.uuid4()),
@@ -111,6 +99,13 @@ async def drive_scout_node(state: SignalAgentState) -> SignalAgentState:
             })
 
         await session.commit()
+
+    log.info(
+        "drive_scout.listed",
+        brand=brand_id,
+        new_signals=len(new_signals),
+        jit_download=True,
+    )
 
     # Mirror newly-queued files into the brand's Google Sheet output (if
     # one is configured on the video_uploader task). Status starts as

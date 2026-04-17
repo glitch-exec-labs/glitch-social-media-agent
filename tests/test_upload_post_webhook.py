@@ -615,21 +615,26 @@ class TestPublisherWebhookPendingSentinel:
             async def fake_dispatch(platform, file_path, script_id, brand_id=None, attempts=1):
                 return "webhook_pending:REQ-XYZ", None
 
-            # Stub the pre-publish ffmpeg transform hook so this test doesn't
-            # need a real file on disk — we're exercising publisher.py's
-            # sentinel handling, not the transform pipeline.
+            # Stub pre-publish hooks so this test doesn't need a real file
+            # on disk — we're exercising publisher.py's sentinel handling,
+            # not the transform or JIT-download pipelines.
             import glitch_signal.media.ffmpeg as ffmpeg_mod
             async def passthrough(file_path, brand_id, platform_key):
                 return file_path
+            async def noop_ensure(asset):
+                return None
             original_dispatch = pub._publish_to_platform
             original_apply = ffmpeg_mod.apply_transforms
+            original_ensure = pub._ensure_local_file
             pub._publish_to_platform = fake_dispatch
             ffmpeg_mod.apply_transforms = passthrough
+            pub._ensure_local_file = noop_ensure
             try:
                 await pub.publish(sp_id)
             finally:
                 pub._publish_to_platform = original_dispatch
                 ffmpeg_mod.apply_transforms = original_apply
+                pub._ensure_local_file = original_ensure
 
             async with factory() as session:
                 sp_row = await session.get(ScheduledPost, sp_id)

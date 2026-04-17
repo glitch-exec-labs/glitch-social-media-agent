@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 from datetime import UTC
 
 import pytest
@@ -81,7 +82,7 @@ class TestDriveFileFiltering:
 
 class TestDriveScoutNode:
     @pytest.mark.asyncio
-    async def test_happy_path_creates_signals_and_downloads(self, tmp_path, monkeypatch):
+    async def test_happy_path_creates_signals_without_downloading(self, tmp_path, monkeypatch):
         from glitch_signal.integrations.google_drive import DriveFile
 
         # Brand config fixture: drive_footage + known folder id
@@ -113,13 +114,14 @@ class TestDriveScoutNode:
             assert folder_id == "FOLDER_XYZ"
             return fake_files
 
-        async def fake_download(file_id, dest):
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"mock video bytes")
-            return len(b"mock video bytes")
+        async def must_not_download(*a, **kw):
+            raise AssertionError(
+                "drive_scout is JIT now — publisher downloads at post time, "
+                "scout only records metadata"
+            )
 
         monkeypatch.setattr(gdrive, "list_video_files", fake_list)
-        monkeypatch.setattr(gdrive, "download_file", fake_download)
+        monkeypatch.setattr(gdrive, "download_file", must_not_download)
 
         # In-memory SQLite for DB writes.
         await _make_memory_db()
@@ -133,9 +135,14 @@ class TestDriveScoutNode:
         assert state["signal_id"]  # first new signal promoted
         assert state["platform"] == "tiktok"
 
-        # Files downloaded under the expected layout
-        assert (tmp_path / "videos" / "drive" / "drive_brand" / "F1.mp4").exists()
-        assert (tmp_path / "videos" / "drive" / "drive_brand" / "F2.mov").exists()
+        # Expected local paths ARE recorded on the state but files are
+        # NOT downloaded — publisher will JIT-download at post time.
+        expected_paths = [s["local_path"] for s in state["signals"]]
+        assert (tmp_path / "videos" / "drive" / "drive_brand" / "F1.mp4").as_posix() in [
+            pathlib.Path(p).as_posix() for p in expected_paths
+        ]
+        assert not (tmp_path / "videos" / "drive" / "drive_brand" / "F1.mp4").exists()
+        assert not (tmp_path / "videos" / "drive" / "drive_brand" / "F2.mov").exists()
 
         # Re-running yields zero new signals (dedup by source_ref)
         state2 = await drive_scout_node({"brand_id": "drive_brand"})
