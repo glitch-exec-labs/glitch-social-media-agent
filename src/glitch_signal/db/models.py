@@ -99,11 +99,17 @@ class ScheduledPost(SQLModel, table=True):
     asset_id: str = Field(foreign_key="video_asset.id", index=True)
     platform: str
     scheduled_for: datetime
-    status: str = "pending_veto"         # pending_veto | queued | dispatching | done | failed | vetoed
+    status: str = "pending_veto"
+    # pending_veto | queued | dispatching | awaiting_webhook | done | failed | vetoed
     veto_deadline: datetime | None = None
     attempts: int = 0
     last_attempt_at: datetime | None = None
     last_error: str | None = None
+    # Vendor-side request identifier (Upload-Post request_id, Zernio post.id).
+    # Populated when a publisher hands control off to an asynchronous vendor
+    # pipeline. Used by the webhook handler and the reconciliation sweep to
+    # correlate vendor callbacks back to the ScheduledPost row.
+    vendor_request_id: str | None = Field(default=None, index=True)
 
 
 # ---------------------------------------------------------------------------

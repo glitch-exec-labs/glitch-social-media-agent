@@ -72,6 +72,7 @@ async def _tick() -> None:
         _send_orm_auto_responses(),
         _sweep_stuck(),
         _poll_orm_mentions(),
+        _reconcile_awaiting_webhook(),
         return_exceptions=True,
     )
 
@@ -309,7 +310,102 @@ async def _sweep_stuck() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. poll_orm_mentions — Phase 1 Twitter monitor
+# 7. reconcile_awaiting_webhook — fallback for Upload-Post webhooks that
+# don't arrive within the reconcile window. Polls get_status once and
+# finalizes the ScheduledPost if the vendor has published.
+# ---------------------------------------------------------------------------
+
+async def _reconcile_awaiting_webhook() -> None:
+    import uuid as _uuid
+
+    from glitch_signal.db.models import PublishedPost
+    from glitch_signal.platforms.upload_post import (
+        _PLATFORM_MAP,
+        poll_status_for_request,
+    )
+
+    s = settings()
+    window_s = s.upload_post_webhook_reconcile_after_s
+    if window_s <= 0:
+        return
+
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=window_s)
+
+    factory = _session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(ScheduledPost).where(
+                ScheduledPost.status == "awaiting_webhook",
+                ScheduledPost.last_attempt_at <= cutoff,
+            ).limit(10)
+        )
+        candidates = result.scalars().all()
+
+    for sp in candidates:
+        target = _PLATFORM_MAP.get(sp.platform)
+        if not target or not sp.vendor_request_id:
+            continue
+        try:
+            ppid, url = await poll_status_for_request(sp.vendor_request_id, target)
+        except Exception as exc:
+            log.warning(
+                "scheduler.reconcile_awaiting_webhook_error",
+                scheduled_post_id=sp.id,
+                request_id=sp.vendor_request_id,
+                error=str(exc)[:200],
+            )
+            # Mark failed on hard error from the vendor; keep otherwise so
+            # the next tick can retry.
+            factory = _session_factory()
+            async with factory() as session:
+                s_row = await session.get(ScheduledPost, sp.id)
+                if s_row:
+                    s_row.status = "failed"
+                    s_row.last_error = str(exc)[:1000]
+                    session.add(s_row)
+                    await session.commit()
+            continue
+
+        if not ppid and not url:
+            # Still in flight — leave awaiting_webhook; try again next tick.
+            continue
+
+        factory = _session_factory()
+        async with factory() as session:
+            s_row = await session.get(ScheduledPost, sp.id)
+            if not s_row:
+                continue
+            existing = (await session.execute(
+                select(PublishedPost).where(PublishedPost.scheduled_post_id == sp.id)
+            )).scalar_one_or_none()
+            if existing:
+                s_row.status = "done"
+                session.add(s_row)
+                await session.commit()
+                continue
+            pub = PublishedPost(
+                id=str(_uuid.uuid4()),
+                brand_id=s_row.brand_id,
+                scheduled_post_id=s_row.id,
+                platform=s_row.platform,
+                platform_post_id=ppid or sp.vendor_request_id,
+                platform_url=url,
+                published_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+            s_row.status = "done"
+            session.add(pub)
+            session.add(s_row)
+            await session.commit()
+            log.info(
+                "scheduler.reconcile_awaiting_webhook_finalized",
+                scheduled_post_id=sp.id,
+                platform_post_id=pub.platform_post_id,
+                via="get_status",
+            )
+
+
+# ---------------------------------------------------------------------------
+# 8. poll_orm_mentions — Phase 1 Twitter monitor
 # ---------------------------------------------------------------------------
 
 async def _poll_orm_mentions() -> None:

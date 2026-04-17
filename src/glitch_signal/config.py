@@ -115,6 +115,15 @@ class Settings(BaseSettings):
     # "upload_post_instagram", etc. See platforms/upload_post.py.
     upload_post_api_key: str = ""
     upload_post_status_timeout_s: int = 180
+    # Webhook custody:
+    #   - secret forms the URL path segment (/webhooks/upload_post/<secret>)
+    #     and is the only thing protecting the endpoint — Upload-Post does
+    #     not sign outgoing webhook bodies, so the URL itself is the secret.
+    #   - reconcile_after_s controls how long a ScheduledPost may sit in
+    #     `awaiting_webhook` before the scheduler falls back to polling
+    #     get_status (e.g. if the webhook was dropped / our server was down).
+    upload_post_webhook_secret: str = ""
+    upload_post_webhook_reconcile_after_s: int = 600   # 10 min
 
     # --- Media-serve public base URL ---
     # Zernio fetches videos from this host when posts are published via

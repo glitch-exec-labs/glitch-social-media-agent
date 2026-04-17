@@ -218,6 +218,103 @@ class TestSchedulerVetoPromotion:
 
 
 # ---------------------------------------------------------------------------
+# 4b. Publisher idempotency guard — if PublishedPost exists, do not re-publish
+# ---------------------------------------------------------------------------
+
+
+class TestPublisherIdempotencyGuard:
+    """If a PublishedPost already exists for a ScheduledPost, publish() must
+    short-circuit to status=done and never invoke the platform publisher."""
+
+    @pytest.mark.asyncio
+    async def test_existing_published_post_short_circuits(self):
+        from datetime import datetime
+
+        from sqlalchemy.ext.asyncio import create_async_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlmodel import SQLModel, select
+        from sqlmodel.ext.asyncio.session import AsyncSession
+
+        from glitch_signal.db.models import PublishedPost, ScheduledPost, VideoAsset
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        factory = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+        asset_id = str(uuid.uuid4())
+        sp_id = str(uuid.uuid4())
+        pp_id = str(uuid.uuid4())
+
+        async with factory() as session:
+            session.add(VideoAsset(
+                id=asset_id,
+                script_id=str(uuid.uuid4()),
+                file_path="/tmp/x.mp4",
+                duration_s=10.0,
+                created_at=now,
+            ))
+            session.add(ScheduledPost(
+                id=sp_id,
+                asset_id=asset_id,
+                platform="zernio_tiktok",
+                scheduled_for=now,
+                status="queued",
+                attempts=1,
+            ))
+            session.add(PublishedPost(
+                id=pp_id,
+                scheduled_post_id=sp_id,
+                platform="zernio_tiktok",
+                platform_post_id="already-live-id",
+                platform_url="https://tiktok.com/@x/video/already",
+                published_at=now,
+            ))
+            await session.commit()
+
+        # Patch _session_factory in every module that bound it at import time.
+        import glitch_signal.agent.nodes.publisher as pub
+        import glitch_signal.db.session as db_session
+
+        def patched_factory():
+            return factory
+
+        originals: dict = {}
+        for mod in (db_session, pub):
+            if hasattr(mod, "_session_factory"):
+                originals[mod] = mod._session_factory
+                mod._session_factory = patched_factory
+
+        # Platform dispatcher must NOT be called on the short-circuit path.
+        async def must_not_call(*args, **kwargs):
+            raise AssertionError("_publish_to_platform must not run when PublishedPost exists")
+        original_dispatch = pub._publish_to_platform
+        pub._publish_to_platform = must_not_call
+
+        try:
+            await pub.publish(sp_id)
+        finally:
+            pub._publish_to_platform = original_dispatch
+            for mod, orig in originals.items():
+                mod._session_factory = orig
+
+        async with factory() as session:
+            result = await session.execute(
+                select(ScheduledPost).where(ScheduledPost.id == sp_id)
+            )
+            updated = result.scalar_one_or_none()
+            # Count PublishedPost rows — must stay at 1, no duplicate row.
+            pp_count = (await session.execute(
+                select(PublishedPost).where(PublishedPost.scheduled_post_id == sp_id)
+            )).scalars().all()
+
+        assert updated is not None
+        assert updated.status == "done"
+        assert len(pp_count) == 1
+
+
+# ---------------------------------------------------------------------------
 # 5. Classifier dry-run — returns positive tier
 # ---------------------------------------------------------------------------
 

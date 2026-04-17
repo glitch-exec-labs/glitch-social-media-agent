@@ -284,6 +284,48 @@ async def oauth_tiktok_callback(
 _MEDIA_KIND = "media"
 
 
+@app.post("/webhooks/upload_post/{secret}")
+async def upload_post_webhook(secret: str, request: Request) -> dict:
+    """Inbound Upload-Post webhook.
+
+    Upload-Post does not sign webhook bodies, so the URL path `secret` is
+    the only access control. Set UPLOAD_POST_WEBHOOK_SECRET to a long
+    random string and register `https://.../webhooks/upload_post/<secret>`
+    with Upload-Post (see scripts/register_upload_post_webhook.py).
+
+    The endpoint always returns 200 on success even when the event was
+    unhandled / unknown — returning an error status would cause
+    Upload-Post to retry, which produces log noise and no useful state
+    change on our side.
+    """
+    expected = settings().upload_post_webhook_secret
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="upload_post webhook is not configured on this instance",
+        )
+    # Constant-time string comparison — the secret lives in the URL path
+    # and could end up in logs, but using `==` directly would leak length
+    # via timing. Use hmac.compare_digest for safety.
+    import hmac as _hmac
+    if not _hmac.compare_digest(secret, expected):
+        log.warning("upload_post.webhook.bad_secret", len=len(secret))
+        raise HTTPException(status_code=403, detail="invalid secret")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        log.warning("upload_post.webhook.bad_json", error=str(exc))
+        raise HTTPException(status_code=400, detail="invalid json") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="expected json object")
+
+    from glitch_signal.webhooks.upload_post import dispatch
+    result = await dispatch(payload)
+    return result
+
+
 @app.get("/media/fetch")
 async def media_fetch(token: str) -> FileResponse:
     try:

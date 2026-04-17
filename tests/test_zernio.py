@@ -107,6 +107,145 @@ class TestPublisherRoutesZernio:
         assert captured == {"platform": "zernio_tiktok", "brand_id": "drive_brand"}
 
 
+class TestZernio409Recovery:
+    """On retry after a vendor-successful-but-code-raised publish, Zernio
+    returns 409. _publish_sync must catch that, list recent posts on the
+    account, and return the already-live post instead of re-raising."""
+
+    def test_409_triggers_list_and_returns_existing_post(self, monkeypatch):
+        from glitch_signal.platforms import zernio as zpub
+
+        class _ZernioAPIError(Exception):
+            def __init__(self, message, status_code=None, details=None):
+                super().__init__(message)
+                self.status_code = status_code
+                self.details = details or {}
+
+        class _FakePlatform:
+            def __init__(self, platform, platform_post_id, url):
+                self.platform = platform
+                self.platformPostId = platform_post_id
+                self.publishedUrl = url
+
+        class _FakePost:
+            def __init__(self, pid, content, platforms):
+                self.id = pid
+                self.content = content
+                self.platforms = platforms
+
+        class _FakeListing:
+            def __init__(self, posts):
+                self.posts = posts
+
+        class _FakePostsResource:
+            def create(self, **kwargs):
+                raise _ZernioAPIError("duplicate post", status_code=409)
+            def list(self, **kwargs):
+                return _FakeListing([
+                    _FakePost(
+                        pid="late_post_abc",
+                        content="Caption body",
+                        platforms=[_FakePlatform(
+                            "tiktok", "7629616067718958337",
+                            "https://www.tiktok.com/@x/video/7629616067718958337",
+                        )],
+                    )
+                ])
+
+        class _FakeZernio:
+            def __init__(self, api_key=None):
+                self.posts = _FakePostsResource()
+
+        import sys
+        monkeypatch.setitem(
+            sys.modules,
+            "zernio",
+            type("M", (), {"Zernio": _FakeZernio, "ZernioAPIError": _ZernioAPIError}),
+        )
+
+        ppid, url = zpub._publish_sync(
+            api_key="k",
+            target_platform="tiktok",
+            account_id="acc1",
+            media_url="https://x/media/fetch?token=t",
+            caption="Caption body",
+            title="",
+            hashtags=[],
+            tiktok_settings=None,
+        )
+        assert ppid == "7629616067718958337"
+        assert url == "https://www.tiktok.com/@x/video/7629616067718958337"
+
+    def test_409_with_no_matching_post_reraises(self, monkeypatch):
+        from glitch_signal.platforms import zernio as zpub
+
+        class _ZernioAPIError(Exception):
+            def __init__(self, message, status_code=None, details=None):
+                super().__init__(message)
+                self.status_code = status_code
+                self.details = details or {}
+
+        class _FakeListing:
+            posts = []
+
+        class _FakePostsResource:
+            def create(self, **kwargs):
+                raise _ZernioAPIError("duplicate", status_code=409)
+            def list(self, **kwargs):
+                return _FakeListing()
+
+        class _FakeZernio:
+            def __init__(self, api_key=None):
+                self.posts = _FakePostsResource()
+
+        import sys
+        monkeypatch.setitem(
+            sys.modules,
+            "zernio",
+            type("M", (), {"Zernio": _FakeZernio, "ZernioAPIError": _ZernioAPIError}),
+        )
+
+        with pytest.raises(_ZernioAPIError):
+            zpub._publish_sync(
+                api_key="k", target_platform="tiktok", account_id="acc1",
+                media_url="https://x/media/fetch?token=t",
+                caption="Caption body", title="", hashtags=[], tiktok_settings=None,
+            )
+
+    def test_non_409_error_is_propagated_unchanged(self, monkeypatch):
+        from glitch_signal.platforms import zernio as zpub
+
+        class _ZernioAPIError(Exception):
+            def __init__(self, message, status_code=None, details=None):
+                super().__init__(message)
+                self.status_code = status_code
+                self.details = details or {}
+
+        class _FakePostsResource:
+            def create(self, **kwargs):
+                raise _ZernioAPIError("bad request", status_code=400)
+            def list(self, **kwargs):
+                raise AssertionError("list must NOT be called for non-duplicate errors")
+
+        class _FakeZernio:
+            def __init__(self, api_key=None):
+                self.posts = _FakePostsResource()
+
+        import sys
+        monkeypatch.setitem(
+            sys.modules,
+            "zernio",
+            type("M", (), {"Zernio": _FakeZernio, "ZernioAPIError": _ZernioAPIError}),
+        )
+
+        with pytest.raises(_ZernioAPIError):
+            zpub._publish_sync(
+                api_key="k", target_platform="tiktok", account_id="acc1",
+                media_url="https://x/media/fetch?token=t",
+                caption="Caption body", title="", hashtags=[], tiktok_settings=None,
+            )
+
+
 class TestSignedMediaUrl:
     """_build_signed_media_url produces a token verifiable by /media/fetch."""
 

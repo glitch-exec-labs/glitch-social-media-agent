@@ -362,6 +362,14 @@ location /media/ {
     proxy_buffering off;
     client_max_body_size 500m;
 }
+
+# Upload-Post webhook callbacks (upload_completed, reauth_required, …)
+location /webhooks/upload_post/ {
+    proxy_pass http://127.0.0.1:3111;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+}
 ```
 
 ---
@@ -380,6 +388,30 @@ Security properties:
 - `"k": "media"` kind field separates these tokens from OAuth state tokens
 - Default 60-minute TTL
 - 403 on any signature / path-escape failure; 404 on missing file
+
+---
+
+## Upload-Post webhooks
+
+The Upload-Post publisher hands the video to the vendor and returns immediately — it no longer blocks on `get_status`. Finalization (writing `PublishedPost`, flipping `scheduled_post.status` to `done`) happens when Upload-Post POSTs the `upload_completed` event to our `/webhooks/upload_post/<secret>` endpoint.
+
+Setup:
+
+1. Generate a random secret:
+   ```
+   python -c 'import secrets; print(secrets.token_urlsafe(32))'
+   ```
+2. Put it in `.env` as `UPLOAD_POST_WEBHOOK_SECRET=…` and restart the service.
+3. Register the webhook URL with Upload-Post:
+   ```
+   source .venv/bin/activate
+   set -a; source .env; set +a
+   python scripts/register_upload_post_webhook.py
+   ```
+
+The URL path segment IS the secret (Upload-Post does not sign webhook bodies). If you rotate the secret, re-run the registration script.
+
+**Fallback:** if a webhook doesn't arrive within `UPLOAD_POST_WEBHOOK_RECONCILE_AFTER_S` (default 10 min) after dispatch, the scheduler polls `get_status(request_id)` once per tick and finalizes the row that way. Covers dropped webhooks / us being down during the callback.
 
 ---
 

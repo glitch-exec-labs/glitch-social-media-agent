@@ -19,6 +19,20 @@ Per-brand config lives under platforms.upload_post_<target> and must carry:
   - enabled: true
   - user: <Upload-Post profile username, e.g. "MyBrand">
 
+Webhook-driven finalization:
+  upload_video() returns immediately with a request_id. Upload-Post then
+  transcodes + publishes asynchronously and POSTs the `upload_completed`
+  event to /webhooks/upload_post/<secret>. The publisher returns a
+  sentinel `webhook_pending:<request_id>` so publisher.py knows to set
+  scheduled_post.status = "awaiting_webhook" instead of writing a
+  PublishedPost row immediately — that row is written by the webhook
+  handler when the real platform_post_id arrives.
+
+  Fallback: if no webhook lands within UPLOAD_POST_WEBHOOK_RECONCILE_AFTER_S,
+  the scheduler polls get_status(request_id) to finalize the row. This
+  protects against dropped webhooks / our server being down during the
+  callback.
+
 DISPATCH_MODE=dry_run short-circuits without calling the SDK.
 """
 from __future__ import annotations
@@ -57,14 +71,41 @@ _PLATFORM_MAP = {
 # fetches within seconds; 1 hour is a very generous ceiling.
 _MEDIA_URL_TTL_S = 60 * 60
 
+# Sentinel returned by publish() when the vendor accepted the upload and is
+# now processing asynchronously. The scheduler should mark the ScheduledPost
+# as awaiting_webhook and wait for the webhook callback (or reconciliation
+# sweep) to finalize.
+_WEBHOOK_PENDING_PREFIX = "webhook_pending:"
+
+
+def is_webhook_pending(token: str) -> bool:
+    """True if publish() returned a pending sentinel rather than a finalized id."""
+    return isinstance(token, str) and token.startswith(_WEBHOOK_PENDING_PREFIX)
+
+
+def extract_request_id(token: str) -> str:
+    """Return the Upload-Post request_id from a pending sentinel."""
+    if not is_webhook_pending(token):
+        raise ValueError(f"Not a webhook-pending sentinel: {token!r}")
+    return token[len(_WEBHOOK_PENDING_PREFIX):]
+
 
 async def publish(
     platform: str,
     file_path: str,
     script_id: str,
     brand_id: str | None = None,
+    attempts: int = 1,
 ) -> tuple[str, str | None]:
-    """Publish a video via Upload-Post. Returns (provider_post_id, share_url|None)."""
+    """Publish a video via Upload-Post. Returns (provider_post_id, share_url|None).
+
+    `attempts` is the scheduler's attempt counter for this ScheduledPost (1 on
+    the first call, ≥2 on retries). Unlike Zernio, Upload-Post does NOT dedup
+    server-side — a naive retry would double-post. So on `attempts > 1` we
+    peek at get_history first and short-circuit if we find a recent matching
+    upload, which recovers from the retry-after-success scenario without ever
+    asking Upload-Post to publish again.
+    """
     s = settings()
 
     if s.is_dry_run:
@@ -102,6 +143,31 @@ async def publish(
         raise FileNotFoundError(f"upload_post.publish: file missing: {file_path}")
 
     caption, title, _hashtags = await _read_caption(script_id, brand_id, cfg_block)
+
+    # Retry-path idempotency: if this is the 2nd+ attempt, check whether a
+    # prior attempt already published successfully on Upload-Post's side.
+    # We match recent history entries on (user, target_platform, caption).
+    if attempts > 1:
+        recovered = await asyncio.to_thread(
+            _lookup_recent_by_caption,
+            api_key=s.upload_post_api_key,
+            user=user,
+            target_platform=target,
+            caption=caption,
+        )
+        if recovered:
+            ppid, url = recovered
+            log.info(
+                "upload_post.publish.recovered_from_history",
+                brand_id=brand_id,
+                target=target,
+                user=user,
+                attempts=attempts,
+                platform_post_id=ppid,
+                share_url=url,
+            )
+            return ppid, url
+
     video_url = _build_signed_media_url(path)
 
     log.info(
@@ -114,8 +180,13 @@ async def publish(
     )
 
     # Upload-Post SDK is blocking requests-based → run in a thread.
-    return await asyncio.to_thread(
-        _publish_sync,
+    # We DO NOT poll get_status here. upload_video() returns a request_id
+    # as soon as UP has accepted the job; the real per-platform post_id and
+    # URL arrive later via the upload_completed webhook, handled in
+    # server.py::upload_post_webhook. This keeps the scheduler event loop
+    # responsive even when UP's transcoding takes minutes.
+    request_id = await asyncio.to_thread(
+        _submit_upload,
         api_key=s.upload_post_api_key,
         user=user,
         target_platform=target,
@@ -123,15 +194,83 @@ async def publish(
         caption=caption,
         title=title,
         extras=_platform_extras(target, cfg_block),
-        poll_timeout_s=s.upload_post_status_timeout_s,
     )
+    return f"{_WEBHOOK_PENDING_PREFIX}{request_id}", None
+
+
+# ---------------------------------------------------------------------------
+# History-based retry short-circuit
+# ---------------------------------------------------------------------------
+
+def _lookup_recent_by_caption(
+    *,
+    api_key: str,
+    user: str,
+    target_platform: str,
+    caption: str,
+) -> tuple[str, str | None] | None:
+    """Return (platform_post_id, url) of a recent matching upload, if any.
+
+    Upload-Post's get_history() returns posts across all users on the API
+    key, so we filter by `user` (profile name). We match by caption equality
+    against the `description`/`text` field that the SDK echoes back.
+    """
+    import upload_post
+
+    client = upload_post.UploadPostClient(api_key=api_key)
+    try:
+        history = client.get_history(page=1, limit=20)
+    except Exception as exc:
+        log.warning(
+            "upload_post.history.lookup_failed",
+            user=user,
+            target=target_platform,
+            error=str(exc)[:200],
+        )
+        return None
+
+    entries = []
+    if isinstance(history, dict):
+        entries = history.get("history") or history.get("results") or history.get("posts") or []
+    elif isinstance(history, list):
+        entries = history
+
+    target_caption = (caption or "").strip()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_user = entry.get("user") or entry.get("username") or entry.get("profile")
+        if entry_user and entry_user != user:
+            continue
+        desc = (
+            entry.get("description")
+            or entry.get("text")
+            or entry.get("caption")
+            or ""
+        ).strip()
+        if target_caption and desc != target_caption:
+            continue
+        # Extract per-platform result for our target.
+        results = entry.get("results") or entry.get("platforms") or []
+        if isinstance(results, dict):
+            results = [{**(v or {}), "platform": k} for k, v in results.items()]
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            if r.get("platform") != target_platform:
+                continue
+            ppid = r.get("platform_post_id") or r.get("platformPostId")
+            url = r.get("post_url") or r.get("url") or r.get("share_url")
+            if ppid or url:
+                return ppid or entry.get("request_id") or "", url
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Blocking worker
 # ---------------------------------------------------------------------------
 
-def _publish_sync(
+def _submit_upload(
     *,
     api_key: str,
     user: str,
@@ -140,9 +279,14 @@ def _publish_sync(
     caption: str,
     title: str,
     extras: dict,
-    poll_timeout_s: int,
-) -> tuple[str, str | None]:
+) -> str:
+    """Hand the video to Upload-Post. Return the vendor's request_id.
 
+    Does NOT wait for the per-platform publish to complete — that happens
+    asynchronously inside Upload-Post. The `upload_completed` webhook (or
+    fallback `poll_status_for_request`) will finalize the ScheduledPost
+    when the publish finishes.
+    """
     import upload_post
 
     client = upload_post.UploadPostClient(api_key=api_key)
@@ -176,36 +320,24 @@ def _publish_sync(
         or (resp.get("results", {}) or {}).get("request_id")
         or str(uuid.uuid4())
     )
-
-    # Upload-Post runs the actual publish asynchronously even when the SDK
-    # call returns. Poll get_status until the target platform completes
-    # (or times out), then extract the real TikTok/IG/etc. URL.
-    platform_post_id, share_url = _poll_until_done(
-        client, request_id, target_platform, poll_timeout_s
-    )
-
     log.info(
-        "upload_post.publish.done",
+        "upload_post.publish.submitted",
         target=target_platform,
         user=user,
         request_id=request_id,
-        platform_post_id=platform_post_id,
-        share_url=share_url,
     )
-
-    # Store the real platform_post_id if we got one; otherwise fall back
-    # to the Upload-Post request_id (at least it's queryable later).
-    return platform_post_id or request_id, share_url
+    return request_id
 
 
-def _poll_until_done(
-    client, request_id: str, target_platform: str, timeout_s: int
+async def poll_status_for_request(
+    request_id: str, target_platform: str
 ) -> tuple[str | None, str | None]:
-    """Poll Upload-Post get_status until the target platform finishes publishing.
+    """Ask Upload-Post for the current status of an already-submitted request.
 
-    Returns (platform_post_id, share_url). Either may be None if:
-      - status poll timed out (publish may still complete later)
-      - Upload-Post's response doesn't include a per-platform result block
+    Used as a fallback by the reconciliation sweep when a webhook doesn't
+    arrive within UPLOAD_POST_WEBHOOK_RECONCILE_AFTER_S. Returns
+    (platform_post_id, share_url), either of which may be None if the
+    publish is still in flight or failed without a post_id.
 
     Upload-Post status shape:
       {
@@ -222,63 +354,78 @@ def _poll_until_done(
         ]
       }
     """
-    import time
+    s = settings()
+    if not s.upload_post_api_key:
+        raise RuntimeError("UPLOAD_POST_API_KEY is not set")
 
-    interval = 3
-    elapsed = 0
-    last_status = None
-
-    while elapsed < timeout_s:
-        try:
-            st = client.get_status(request_id=request_id)
-        except Exception as exc:
-            log.warning(
-                "upload_post.status.poll_failed",
-                request_id=request_id,
-                error=str(exc)[:200],
-            )
-            time.sleep(interval)
-            elapsed += interval
-            continue
-
-        last_status = st
-        overall = str((st or {}).get("status", "")).lower()
-
-        # Find the result block for our target platform. get_status returns
-        # results as a list of dicts, one per platform in the original call.
-        results = (st or {}).get("results") or []
-        if isinstance(results, dict):
-            # Some SDK variants key by platform name instead of listing.
-            results = [{**(v or {}), "platform": k} for k, v in results.items()]
-
-        for r in results:
-            if not isinstance(r, dict):
-                continue
-            if r.get("platform") != target_platform:
-                continue
-            ppid = r.get("platform_post_id") or r.get("platformPostId")
-            url = r.get("post_url") or r.get("url") or r.get("share_url")
-            err = r.get("error_message") or r.get("errorMessage")
-            if err and not ppid:
-                raise RuntimeError(f"Upload-Post publish failed on {target_platform}: {err}")
-            if ppid or url:
-                return ppid, url
-
-        if overall in ("completed", "failed", "error"):
-            # Overall finished but we couldn't find our platform block —
-            # return what we have (None, None) so caller can fall back.
-            break
-
-        time.sleep(interval)
-        elapsed += interval
-
-    log.warning(
-        "upload_post.status.poll_timeout",
+    return await asyncio.to_thread(
+        _poll_once,
+        api_key=s.upload_post_api_key,
         request_id=request_id,
-        target=target_platform,
-        last_status=last_status,
+        target_platform=target_platform,
     )
+
+
+def _poll_once(*, api_key: str, request_id: str, target_platform: str) -> tuple[str | None, str | None]:
+    import upload_post
+
+    client = upload_post.UploadPostClient(api_key=api_key)
+    try:
+        st = client.get_status(request_id=request_id)
+    except Exception as exc:
+        log.warning(
+            "upload_post.reconcile.status_failed",
+            request_id=request_id,
+            error=str(exc)[:200],
+        )
+        return None, None
+
+    results = (st or {}).get("results") or []
+    if isinstance(results, dict):
+        results = [{**(v or {}), "platform": k} for k, v in results.items()]
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        if r.get("platform") != target_platform:
+            continue
+        ppid = r.get("platform_post_id") or r.get("platformPostId")
+        url = r.get("post_url") or r.get("url") or r.get("share_url")
+        err = r.get("error_message") or r.get("errorMessage")
+        if err and not ppid:
+            raise RuntimeError(f"Upload-Post publish failed on {target_platform}: {err}")
+        if ppid or url:
+            return ppid, url
     return None, None
+
+
+# ---------------------------------------------------------------------------
+# Webhook event parsing — shared with server.py handler
+# ---------------------------------------------------------------------------
+
+def extract_post_from_event(event: dict, target_platform: str) -> tuple[str | None, str | None, str | None]:
+    """Pull (platform_post_id, share_url, error_message) from an upload_completed event.
+
+    Accepts both top-level `results` list shapes and the `result` singleton
+    shape documented for Upload-Post webhooks. Does not raise — returns
+    Nones for any field the payload is missing.
+    """
+    results = event.get("results") or event.get("result") or []
+    if isinstance(results, dict):
+        # `result: {success, platform_post_id, post_url, ...}` one-up shape.
+        if "platform" not in results:
+            results = [{**results, "platform": target_platform}]
+        else:
+            results = [results]
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        if r.get("platform") and r.get("platform") != target_platform:
+            continue
+        ppid = r.get("platform_post_id") or r.get("platformPostId")
+        url = r.get("post_url") or r.get("url") or r.get("share_url") or r.get("published_url")
+        err = r.get("error_message") or r.get("errorMessage") or r.get("error")
+        return ppid, url, err
+    return None, None, None
 
 
 # ---------------------------------------------------------------------------

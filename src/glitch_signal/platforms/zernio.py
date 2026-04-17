@@ -164,7 +164,39 @@ def _publish_sync(
     if tiktok_settings is not None:
         kwargs["tiktok_settings"] = tiktok_settings
 
-    resp = client.posts.create(**kwargs)
+    try:
+        resp = client.posts.create(**kwargs)
+    except zernio.ZernioAPIError as exc:
+        # Retry-after-success recovery: a previous attempt published on
+        # Zernio but our code raised before we could record the post_id.
+        # On retry, Zernio's dedup surfaces as a 409. Look up the existing
+        # post on the account and return it so the scheduler marks done
+        # instead of retrying into a growing failure counter.
+        if not _is_duplicate_error(exc):
+            raise
+        recovered = _recover_published_post(
+            client,
+            target_platform=target_platform,
+            account_id=account_id,
+            caption=caption,
+        )
+        if not recovered:
+            log.error(
+                "zernio.publish.duplicate_unrecoverable",
+                target_platform=target_platform,
+                status_code=getattr(exc, "status_code", None),
+                error=str(exc)[:200],
+            )
+            raise
+        post_id, share_url = recovered
+        log.info(
+            "zernio.publish.recovered_from_duplicate",
+            target_platform=target_platform,
+            zernio_post_id=post_id,
+            share_url=share_url,
+        )
+        return post_id, share_url
+
     post = getattr(resp, "post", None)
     post_id = getattr(post, "id", None) or getattr(post, "field_id", None)
     share_url = getattr(post, "url", None) or getattr(post, "share_url", None)
@@ -183,6 +215,65 @@ def _publish_sync(
         share_url=share_url,
     )
     return post_id, share_url
+
+
+# ---------------------------------------------------------------------------
+# Duplicate / 409 recovery
+# ---------------------------------------------------------------------------
+
+def _is_duplicate_error(exc: Exception) -> bool:
+    """Zernio signals duplicates via status_code==409 or a 'duplicate'-shaped message."""
+    code = getattr(exc, "status_code", None)
+    if code == 409:
+        return True
+    msg = str(exc).lower()
+    return "duplicate" in msg or "already" in msg
+
+
+def _recover_published_post(
+    client,
+    *,
+    target_platform: str,
+    account_id: str,
+    caption: str,
+) -> tuple[str, str | None] | None:
+    """List recent posts on the account and return the match for our caption.
+
+    We filter by account (`profile_id`) and platform, then match on `content`
+    equality. Only the live per-platform post_id/url is useful to the caller,
+    so we dig into `Post.platforms[].platformPostId / publishedUrl`.
+    """
+    try:
+        listing = client.posts.list(
+            profile_id=account_id,
+            platform=target_platform,
+            limit=20,
+        )
+    except Exception as exc:
+        log.warning(
+            "zernio.publish.recover_list_failed",
+            error=str(exc)[:200],
+        )
+        return None
+
+    posts = getattr(listing, "posts", None) or []
+    for p in posts:
+        content = (getattr(p, "content", None) or "").strip()
+        if content != caption.strip():
+            continue
+        plats = getattr(p, "platforms", None) or []
+        for pl in plats:
+            if getattr(pl, "platform", None) != target_platform:
+                continue
+            ppid = getattr(pl, "platformPostId", None)
+            purl = getattr(pl, "publishedUrl", None)
+            if ppid or purl:
+                return ppid or getattr(p, "id", None) or str(uuid.uuid4()), purl
+        # Fallback: platforms block missing post_id — return the Zernio post id
+        zid = getattr(p, "id", None)
+        if zid:
+            return zid, None
+    return None
 
 
 # ---------------------------------------------------------------------------

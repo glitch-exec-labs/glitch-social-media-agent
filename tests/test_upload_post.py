@@ -117,7 +117,7 @@ class TestPlatformExtras:
 
 class TestNoTitleForShortFormPlatforms:
     """TikTok / IG / X etc. don't have a title concept — passing one leaks
-    into the caption body. _publish_sync should skip the title kwarg for
+    into the caption body. _submit_upload should skip the title kwarg for
     these and only pass it to YouTube / Pinterest / LinkedIn."""
 
     def test_tiktok_call_omits_title(self, monkeypatch):
@@ -129,8 +129,6 @@ class TestNoTitleForShortFormPlatforms:
             def upload_video(self, **kwargs):
                 captured.update(kwargs)
                 return {"success": True, "request_id": "r"}
-            def get_status(self, request_id):
-                return {"status": "completed", "results": [{"platform": "tiktok", "post_url": None, "platform_post_id": None}]}
 
         import sys
         monkeypatch.setitem(
@@ -139,11 +137,11 @@ class TestNoTitleForShortFormPlatforms:
             type("M", (), {"UploadPostClient": lambda api_key=None: _C()}),
         )
 
-        up._publish_sync(
+        up._submit_upload(
             api_key="k", user="MyBrand", target_platform="tiktok",
             video_url="https://x/media/fetch?token=t",
             caption="Body text here #foo", title="Would leak into caption",
-            extras={}, poll_timeout_s=5,
+            extras={},
         )
         assert "title" not in captured, f"title should NOT be in tiktok upload kwargs, got {list(captured)}"
         assert captured.get("description") == "Body text here #foo"
@@ -157,8 +155,6 @@ class TestNoTitleForShortFormPlatforms:
             def upload_video(self, **kwargs):
                 captured.update(kwargs)
                 return {"success": True, "request_id": "r"}
-            def get_status(self, request_id):
-                return {"status": "completed", "results": [{"platform": "youtube", "post_url": "https://youtu.be/abc", "platform_post_id": "abc"}]}
 
         import sys
         monkeypatch.setitem(
@@ -167,18 +163,26 @@ class TestNoTitleForShortFormPlatforms:
             type("M", (), {"UploadPostClient": lambda api_key=None: _C()}),
         )
 
-        up._publish_sync(
+        up._submit_upload(
             api_key="k", user="MyBrand", target_platform="youtube",
             video_url="https://x/media/fetch?token=t",
             caption="Body text", title="Real YouTube Title",
-            extras={}, poll_timeout_s=5,
+            extras={},
         )
         assert captured.get("title") == "Real YouTube Title"
 
 
-class TestPollUntilDone:
-    def test_finds_post_url_from_results_list(self):
-        from glitch_signal.platforms.upload_post import _poll_until_done
+class TestPollStatusForRequest:
+    """poll_status_for_request is a single-shot status poll used by the
+    scheduler's reconciliation sweep when a webhook never arrived."""
+
+    @pytest.mark.asyncio
+    async def test_finds_post_url_from_results_list(self, monkeypatch):
+        from glitch_signal import config as cfg
+        from glitch_signal.platforms import upload_post as up
+
+        monkeypatch.setenv("UPLOAD_POST_API_KEY", "k")
+        cfg.settings.cache_clear()
 
         class _C:
             def get_status(self, request_id):
@@ -187,25 +191,46 @@ class TestPollUntilDone:
                      "platform_post_id": "762976", "post_url": "https://tt/x/video/1"}
                 ]}
 
-        ppid, url = _poll_until_done(_C(), "req-123", "tiktok", timeout_s=10)
+        import sys
+        monkeypatch.setitem(
+            sys.modules,
+            "upload_post",
+            type("M", (), {"UploadPostClient": lambda api_key=None: _C()}),
+        )
+
+        ppid, url = await up.poll_status_for_request("req-123", "tiktok")
         assert ppid == "762976"
         assert url == "https://tt/x/video/1"
 
-    def test_timeout_returns_none(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_in_flight_returns_none(self, monkeypatch):
+        from glitch_signal import config as cfg
         from glitch_signal.platforms import upload_post as up
+
+        monkeypatch.setenv("UPLOAD_POST_API_KEY", "k")
+        cfg.settings.cache_clear()
 
         class _C:
             def get_status(self, request_id):
                 return {"status": "processing", "results": [{"platform": "tiktok"}]}
 
-        import time
-        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        import sys
+        monkeypatch.setitem(
+            sys.modules,
+            "upload_post",
+            type("M", (), {"UploadPostClient": lambda api_key=None: _C()}),
+        )
 
-        ppid, url = up._poll_until_done(_C(), "req", "tiktok", timeout_s=1)
+        ppid, url = await up.poll_status_for_request("req", "tiktok")
         assert ppid is None and url is None
 
-    def test_platform_error_raises(self):
-        from glitch_signal.platforms.upload_post import _poll_until_done
+    @pytest.mark.asyncio
+    async def test_platform_error_raises(self, monkeypatch):
+        from glitch_signal import config as cfg
+        from glitch_signal.platforms import upload_post as up
+
+        monkeypatch.setenv("UPLOAD_POST_API_KEY", "k")
+        cfg.settings.cache_clear()
 
         class _C:
             def get_status(self, request_id):
@@ -214,8 +239,15 @@ class TestPollUntilDone:
                      "error_message": "video rejected by TikTok"}
                 ]}
 
+        import sys
+        monkeypatch.setitem(
+            sys.modules,
+            "upload_post",
+            type("M", (), {"UploadPostClient": lambda api_key=None: _C()}),
+        )
+
         with pytest.raises(RuntimeError, match="video rejected"):
-            _poll_until_done(_C(), "req", "tiktok", timeout_s=10)
+            await up.poll_status_for_request("req", "tiktok")
 
 
 class TestResolvePublishPlatform:
@@ -309,9 +341,10 @@ class TestPublisherRoutesUploadPost:
 
         captured = {}
 
-        async def fake_publish(platform, file_path, script_id, brand_id=None):
+        async def fake_publish(platform, file_path, script_id, brand_id=None, attempts=1):
             captured["platform"] = platform
             captured["brand_id"] = brand_id
+            captured["attempts"] = attempts
             return "up-stub-id", "https://www.tiktok.com/@x/video/1"
 
         monkeypatch.setattr("glitch_signal.platforms.upload_post.publish", fake_publish)
@@ -320,8 +353,137 @@ class TestPublisherRoutesUploadPost:
         cfg.settings.cache_clear()
 
         post_id, url = await publisher._publish_to_platform(
-            "upload_post_tiktok", "/x.mp4", "s1", brand_id="drive_brand"
+            "upload_post_tiktok", "/x.mp4", "s1", brand_id="drive_brand", attempts=2
         )
         assert post_id == "up-stub-id"
         assert url == "https://www.tiktok.com/@x/video/1"
-        assert captured == {"platform": "upload_post_tiktok", "brand_id": "drive_brand"}
+        assert captured == {"platform": "upload_post_tiktok", "brand_id": "drive_brand", "attempts": 2}
+
+
+class TestUploadPostRetryShortCircuit:
+    """On attempts > 1, publish() should peek at get_history and short-circuit
+    if a matching post is already live, avoiding a duplicate upload."""
+
+    @pytest.mark.asyncio
+    async def test_retry_short_circuits_on_history_hit(self, tmp_path, monkeypatch):
+        from glitch_signal import config as cfg
+        from glitch_signal.platforms import upload_post as up
+
+        # Brand config with upload_post_tiktok enabled.
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        import json
+        (configs / "drive_brand.json").write_text(json.dumps({
+            "brand_id": "drive_brand",
+            "display_name": "MyBrand",
+            "timezone": "UTC",
+            "platforms": {"upload_post_tiktok": {"enabled": True, "user": "MyBrand"}},
+        }))
+        monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
+        monkeypatch.setenv("DEFAULT_BRAND_ID", "drive_brand")
+        monkeypatch.setenv("DISPATCH_MODE", "live")
+        monkeypatch.setenv("UPLOAD_POST_API_KEY", "k")
+        cfg.settings.cache_clear()
+        cfg._reset_brand_registry_for_tests()
+
+        # Prepare a fake video file (publish checks existence).
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"x")
+
+        # Stub ContentScript loader so caption is deterministic.
+        async def fake_read_caption(script_id, brand_id, cfg_block):
+            return "Test caption", "Test title", []
+        monkeypatch.setattr(up, "_read_caption", fake_read_caption)
+
+        # Stub the upload_post SDK used by _lookup_recent_by_caption.
+        class _FakeClient:
+            def get_history(self, page=1, limit=20):
+                return {"history": [
+                    {"user": "MyBrand", "description": "Test caption",
+                     "results": [{"platform": "tiktok",
+                                  "platform_post_id": "7629763",
+                                  "post_url": "https://tiktok.com/@x/video/7629763"}]}
+                ]}
+            def upload_video(self, **kwargs):
+                raise AssertionError("upload_video should not be called on retry short-circuit")
+
+        import sys
+        monkeypatch.setitem(
+            sys.modules,
+            "upload_post",
+            type("M", (), {"UploadPostClient": lambda api_key=None: _FakeClient()}),
+        )
+
+        ppid, url = await up.publish(
+            platform="upload_post_tiktok",
+            file_path=str(video),
+            script_id="s1",
+            brand_id="drive_brand",
+            attempts=2,
+        )
+        assert ppid == "7629763"
+        assert url == "https://tiktok.com/@x/video/7629763"
+
+    @pytest.mark.asyncio
+    async def test_first_attempt_returns_webhook_pending_sentinel(self, tmp_path, monkeypatch):
+        """On attempts=1 we upload and return a webhook_pending:<id> sentinel —
+        NOT a finalized post_id. get_history must NOT be called (history-check
+        is a retry-only concern) and get_status must NOT be called (finalization
+        happens via webhook, not polling)."""
+        from glitch_signal import config as cfg
+        from glitch_signal.platforms import upload_post as up
+
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        import json
+        (configs / "drive_brand.json").write_text(json.dumps({
+            "brand_id": "drive_brand",
+            "display_name": "MyBrand",
+            "timezone": "UTC",
+            "platforms": {"upload_post_tiktok": {"enabled": True, "user": "MyBrand"}},
+        }))
+        monkeypatch.setenv("BRAND_CONFIGS_DIR", str(configs))
+        monkeypatch.setenv("DEFAULT_BRAND_ID", "drive_brand")
+        monkeypatch.setenv("DISPATCH_MODE", "live")
+        monkeypatch.setenv("UPLOAD_POST_API_KEY", "k")
+        cfg.settings.cache_clear()
+        cfg._reset_brand_registry_for_tests()
+
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"x")
+
+        async def fake_read_caption(script_id, brand_id, cfg_block):
+            return "Test caption", "Test title", []
+        monkeypatch.setattr(up, "_read_caption", fake_read_caption)
+
+        upload_called = {"n": 0}
+
+        class _FakeClient:
+            def get_history(self, page=1, limit=20):
+                raise AssertionError("get_history must not be called on first attempt")
+            def upload_video(self, **kwargs):
+                upload_called["n"] += 1
+                return {"success": True, "request_id": "r-1"}
+            def get_status(self, request_id):
+                raise AssertionError(
+                    "get_status must not be called from publish() — webhook-driven now"
+                )
+
+        import sys
+        monkeypatch.setitem(
+            sys.modules,
+            "upload_post",
+            type("M", (), {"UploadPostClient": lambda api_key=None: _FakeClient()}),
+        )
+
+        ppid, url = await up.publish(
+            platform="upload_post_tiktok",
+            file_path=str(video),
+            script_id="s1",
+            brand_id="drive_brand",
+            attempts=1,
+        )
+        assert up.is_webhook_pending(ppid)
+        assert up.extract_request_id(ppid) == "r-1"
+        assert url is None
+        assert upload_called["n"] == 1

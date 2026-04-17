@@ -10,6 +10,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import structlog
+from sqlalchemy import select
 
 from glitch_signal.config import settings
 from glitch_signal.db.models import PublishedPost, ScheduledPost, VideoAsset
@@ -27,6 +28,27 @@ async def publish(scheduled_post_id: str) -> None:
             log.error("publisher.not_found", scheduled_post_id=scheduled_post_id)
             return
 
+        # Idempotency guard — a prior attempt may have written PublishedPost
+        # but crashed before flipping scheduled_post.status to "done" (process
+        # kill, DB commit blip, etc.). If we see a PublishedPost row, the
+        # vendor already posted; do not ask it to post again.
+        result = await session.execute(
+            select(PublishedPost).where(
+                PublishedPost.scheduled_post_id == scheduled_post_id
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            log.info(
+                "publisher.already_published",
+                scheduled_post_id=scheduled_post_id,
+                platform_post_id=existing.platform_post_id,
+            )
+            sp.status = "done"
+            session.add(sp)
+            await session.commit()
+            return
+
         asset = await session.get(VideoAsset, sp.asset_id)
         if not asset:
             await _mark_failed(session, sp, "VideoAsset not found")
@@ -37,15 +59,47 @@ async def publish(scheduled_post_id: str) -> None:
         sp.last_attempt_at = datetime.now(UTC).replace(tzinfo=None)
         session.add(sp)
         await session.commit()
+        attempts_before_call = sp.attempts
 
     try:
         brand_id = getattr(sp, "brand_id", None) or getattr(asset, "brand_id", None)
         platform_post_id, platform_url = await _publish_to_platform(
-            sp.platform, asset.file_path, asset.script_id, brand_id=brand_id
+            sp.platform,
+            asset.file_path,
+            asset.script_id,
+            brand_id=brand_id,
+            attempts=attempts_before_call,
         )
     except Exception as exc:
         log.error("publisher.failed", scheduled_post_id=scheduled_post_id, error=str(exc))
         await _handle_failure(scheduled_post_id, str(exc))
+        return
+
+    # Vendor-async handoff: publishers that finish over webhooks return a
+    # `webhook_pending:<request_id>` sentinel instead of a real post_id.
+    # We persist the request_id so the webhook handler / reconciliation
+    # sweep can correlate the callback back to this ScheduledPost, and
+    # flip status to `awaiting_webhook` so the scheduler stops trying to
+    # republish it.
+    from glitch_signal.platforms.upload_post import (
+        extract_request_id,
+        is_webhook_pending,
+    )
+    if is_webhook_pending(platform_post_id):
+        request_id = extract_request_id(platform_post_id)
+        factory = _session_factory()
+        async with factory() as session:
+            sp = await session.get(ScheduledPost, scheduled_post_id)
+            if sp:
+                sp.status = "awaiting_webhook"
+                sp.vendor_request_id = request_id
+                session.add(sp)
+                await session.commit()
+        log.info(
+            "publisher.awaiting_webhook",
+            scheduled_post_id=scheduled_post_id,
+            vendor_request_id=request_id,
+        )
         return
 
     factory = _session_factory()
@@ -80,6 +134,7 @@ async def _publish_to_platform(
     file_path: str,
     script_id: str,
     brand_id: str | None = None,
+    attempts: int = 1,
 ) -> tuple[str, str | None]:
     if settings().is_dry_run:
         log.info("publisher.dry_run", platform=platform, file_path=file_path, brand_id=brand_id)
@@ -99,7 +154,9 @@ async def _publish_to_platform(
 
     if platform.startswith("upload_post_"):
         from glitch_signal.platforms.upload_post import publish as upload_post_publish
-        return await upload_post_publish(platform, file_path, script_id, brand_id=brand_id)
+        return await upload_post_publish(
+            platform, file_path, script_id, brand_id=brand_id, attempts=attempts
+        )
 
     if platform == "twitter":
         from glitch_signal.platforms.twitter import post_video
