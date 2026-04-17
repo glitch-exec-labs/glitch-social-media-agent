@@ -99,6 +99,28 @@
             "video_cover_timestamp_ms": {"type": "integer", "minimum": 0},
             "default_tags": {"type": "array", "items": {"type": "string"}}
           }
+        },
+        "zernio_tiktok": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Post to TikTok via Zernio (audited partner app). Use this instead of 'tiktok' until our own TikTok dev app is audited.",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "account_id": {
+              "type": ["string", "null"],
+              "description": "Zernio internal account id (field_id from client.accounts.list()), NOT the TikTok open_id."
+            },
+            "daily_cap": {"type": "integer", "minimum": 0},
+            "default_privacy_level": {
+              "type": "string",
+              "enum": ["PUBLIC_TO_EVERYONE", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "SELF_ONLY"]
+            },
+            "disable_duet": {"type": "boolean"},
+            "disable_stitch": {"type": "boolean"},
+            "disable_comment": {"type": "boolean"},
+            "video_cover_timestamp_ms": {"type": "integer", "minimum": 0},
+            "default_tags": {"type": "array", "items": {"type": "string"}}
+          }
         }
       }
     },

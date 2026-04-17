@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     make_org_id: str = ""
     make_api_token: str = ""
 
+    # --- Zernio (audited multi-platform social-posting API) ---
+    # Used as a parallel publisher ("zernio_tiktok", "zernio_instagram", …)
+    # when our own per-platform dev apps are unaudited. See platforms/zernio.py.
+    zernio_api_key: str = ""
+    zernio_base_url: str = "https://zernio.com/api"
+
     # --- Retry windows (ms) ---
     publish_retry_1_ms: int = 1_800_000   # 30 min
     publish_retry_2_ms: int = 7_200_000   # 2 h
