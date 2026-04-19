@@ -258,6 +258,12 @@ async def _publish_to_platform(
             platform, file_path, script_id, brand_id=brand_id, attempts=attempts
         )
 
+    if platform.startswith("buffer_"):
+        from glitch_signal.platforms.buffer import publish as buffer_publish
+        return await buffer_publish(
+            platform, file_path, script_id, brand_id=brand_id, attempts=attempts
+        )
+
     if platform == "twitter":
         from glitch_signal.platforms.twitter import post_video
         return await post_video(file_path, script_id)

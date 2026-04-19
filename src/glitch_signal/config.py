@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     # Cheaper than Zernio at real volume. Platform keys: "upload_post_tiktok",
     # "upload_post_instagram", etc. See platforms/upload_post.py.
     upload_post_api_key: str = ""
+
+    # --- Buffer (third partner, GraphQL) ---
+    # Added 2026-04-19 specifically for TikTok AI-voice content: Upload-Post
+    # re-muxes server-side and triggers TikTok's synthetic-media mute on
+    # iOS/web, while Buffer forwards our signed URL untouched and the audio
+    # plays on every surface. See platforms/buffer.py for the full diagnosis.
+    buffer_api_token: str = ""
     upload_post_status_timeout_s: int = 180
     # Webhook custody:
     #   - secret forms the URL path segment (/webhooks/upload_post/<secret>)
@@ -293,8 +300,14 @@ def brand_config(brand_id: str | None = None) -> dict:
 # 10+ platforms under one integration. Zernio is the fallback (also
 # audited) if Upload-Post is disabled for a brand. Direct apps come last
 # because most aren't audited yet.
+#
+# TikTok exception: buffer_tiktok is preferred over upload_post_tiktok
+# because Upload-Post's server-side remux triggers TikTok's synthetic-
+# media audio mute on iOS/web for AI-voice content. Buffer forwards the
+# file URL untouched and the audio plays everywhere. Diagnosed 2026-04-19
+# with A/B posts of the same byte-identical file. See platforms/buffer.py.
 _PUBLISH_PRIORITY = {
-    "tiktok":    ["upload_post_tiktok", "zernio_tiktok", "tiktok"],
+    "tiktok":    ["buffer_tiktok", "upload_post_tiktok", "zernio_tiktok", "tiktok"],
     "instagram": ["upload_post_instagram", "zernio_instagram", "instagram_reels"],
     "youtube":   ["upload_post_youtube", "zernio_youtube", "youtube_shorts"],
     "facebook":  ["upload_post_facebook", "zernio_facebook"],

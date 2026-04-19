@@ -326,8 +326,12 @@ async def upload_post_webhook(secret: str, request: Request) -> dict:
     return result
 
 
-@app.get("/media/fetch")
-async def media_fetch(token: str) -> FileResponse:
+def _resolve_media_path(token: str) -> pathlib.Path:
+    """Validate signed media token and return the on-disk path.
+
+    Shared by GET and HEAD handlers. Raises HTTPException on any failure
+    so both verbs return identical status codes to the caller.
+    """
     try:
         payload = verify_state_token(token)
     except ValueError as exc:
@@ -353,11 +357,39 @@ async def media_fetch(token: str) -> FileResponse:
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Media not found")
 
+    return path
+
+
+@app.get("/media/fetch")
+async def media_fetch(token: str) -> FileResponse:
+    path = _resolve_media_path(token)
     log.info("media.fetch.served", path=str(path), bytes=path.stat().st_size)
     return FileResponse(
         path=str(path),
         media_type="video/mp4",
         filename=path.name,
+    )
+
+
+@app.head("/media/fetch")
+async def media_fetch_head(token: str) -> Response:
+    """HEAD pre-flight for vendors that validate media URLs before ingest.
+
+    Buffer (and likely other partners) issue a HEAD request to `/media/fetch`
+    before accepting the URL into a post. A 405 on HEAD gets reported back
+    as "URL not accessible" and the post is rejected. This mirrors the GET
+    validation (signed-token check + path confinement) without streaming
+    bytes — just returns the headers the vendor needs to proceed.
+    """
+    path = _resolve_media_path(token)
+    size = path.stat().st_size
+    return Response(
+        status_code=200,
+        headers={
+            "Content-Type": "video/mp4",
+            "Content-Length": str(size),
+            "Accept-Ranges": "bytes",
+        },
     )
 
 

@@ -753,16 +753,44 @@ async def _reconcile_awaiting_webhook() -> None:
         candidates = result.scalars().all()
 
     for sp in candidates:
-        target = _PLATFORM_MAP.get(sp.platform)
-        if not target or not sp.vendor_request_id:
+        if not sp.vendor_request_id:
             continue
+
+        # Dispatch to the right vendor poll based on platform prefix.
+        # Buffer and Upload-Post share the `awaiting_webhook` status and
+        # the `vendor_request_id` column (Buffer stores a post id there,
+        # Upload-Post a request id). The ScheduledPost.platform tells
+        # us which vendor to ask.
         try:
-            ppid, url = await poll_status_for_request(sp.vendor_request_id, target)
+            if sp.platform.startswith("buffer_"):
+                from glitch_signal.config import brand_config
+                from glitch_signal.platforms.buffer import poll_status_for_post
+                cfg_block = (
+                    brand_config(sp.brand_id).get("platforms", {}).get(sp.platform, {})
+                    or {}
+                )
+                organization_id = cfg_block.get("organization_id")
+                if not organization_id:
+                    log.warning(
+                        "scheduler.reconcile_missing_buffer_org",
+                        scheduled_post_id=sp.id,
+                        platform=sp.platform,
+                    )
+                    continue
+                ppid, url = await poll_status_for_post(
+                    sp.vendor_request_id, organization_id
+                )
+            else:
+                target = _PLATFORM_MAP.get(sp.platform)
+                if not target:
+                    continue
+                ppid, url = await poll_status_for_request(sp.vendor_request_id, target)
         except Exception as exc:
             log.warning(
                 "scheduler.reconcile_awaiting_webhook_error",
                 scheduled_post_id=sp.id,
                 request_id=sp.vendor_request_id,
+                platform=sp.platform,
                 error=str(exc)[:200],
             )
             # Mark failed on hard error from the vendor; keep otherwise so
