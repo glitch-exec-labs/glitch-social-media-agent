@@ -451,7 +451,7 @@ def _submit_image(
 
     client = upload_post.UploadPostClient(api_key=api_key)
     resp = client.upload_photos(
-        image_paths=[image_path], title=caption, user=user, platforms=[target_platform], **extras
+        photos=[image_path], title=caption, user=user, platforms=[target_platform], **extras
     )
     if not resp.get("success", True):
         raise RuntimeError(f"Upload-Post upload_photos failed: {resp}")

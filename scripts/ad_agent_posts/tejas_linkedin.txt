@@ -1,0 +1,25 @@
+Shipped this today for the Grow agent.
+
+It scans our ad accounts on a schedule and surfaces Action Proposals in Telegram when something shifts — a performer worth scaling, a drifter worth pausing. I approve or reject. That's the whole interaction.
+
+What I'm proud of isn't the recommendation. It's the evidence block attached to every proposal.
+
+Today's example: the agent wanted to bump an ad set's daily budget from ₹2,200 to ₹2,860. Instead of just "raise budget," the proposal carried:
+
+— Spend over last 14 days: ₹65,286
+— ROAS over that window: 1.24×
+— Clicks: 742
+— Expected incremental spend: +₹19,800/mo
+— Expected incremental revenue: +₹24,552/mo if ROAS holds
+— Safety: auto-reverts below 1.0× ROAS
+— Expires in 72h if I don't answer
+
+I read that for about 8 seconds and approved.
+
+The pattern that keeps showing up in our work: full autonomy on money decisions is too risky when attribution is noisy. Asking for approval on everything is useless — the operator becomes the bottleneck. The middle path is an agent that does the hard work of watching and reasoning, and asks the human for exactly one thing: the go-ahead.
+
+Same shape as the Oracle in our trading stack. Same shape as the 48-hour approval window on our social media agent. We keep ending up here because it keeps working.
+
+github.com/glitch-exec-labs/glitch-grow-ads-agent
+
+#buildinpublic #glitchexecutor #metaads #ai #adops
