@@ -52,6 +52,80 @@ PLATFORM_TARGET_CHARS = {
     "upload_post_linkedin": 1800,
 }
 
+# ---------------------------------------------------------------------------
+# Forbidden-terms filter: post-hoc check that catches hype adjectives and
+# marketing verbs the LLM slips in even when the system prompt forbids them.
+# Match is case-insensitive, whole-word. A single hit triggers one
+# regeneration round with the offending phrases added as an explicit ban.
+# ---------------------------------------------------------------------------
+
+_FORBIDDEN_WORDS: tuple[str, ...] = (
+    # Hype adjectives
+    "seamlessly", "seamless",
+    "robust",
+    "fluid",
+    "powerful",
+    "refined",
+    "sleek",
+    "cutting-edge",
+    "game-changing", "game-changer",
+    "revolutionary",
+    "industry-leading",
+    "next-generation", "next-gen",
+    "state-of-the-art",
+    "world-class",
+    "best-in-class",
+    "turnkey",
+    # Marketing verbs that imply measured outcomes
+    "delivers",
+    "boosts",
+    "supercharges",
+    "unlocks",
+    "empowers",
+    # Founder-speak
+    "thrilled",
+    "humbled",
+    "grateful for the journey",
+    "proud to announce", "excited to announce", "excited to share",
+    "stay tuned",
+    # Corporate gloss
+    "quest for",
+    "in our quest",
+    "our journey",
+    "on our journey",
+)
+
+# Engagement-bait question patterns. These sneak in on short-form X posts.
+_ENGAGEMENT_BAIT_PATTERNS: tuple[str, ...] = (
+    "what do you think",
+    "what's your take",
+    "whats your take",
+    "thoughts?",
+    "agree?",
+    "am i missing something?",
+    "what would you do",
+    "curious what you think",
+)
+
+
+def _forbidden_hits(body: str) -> list[str]:
+    """Return every forbidden term / bait pattern that appears in the body."""
+    import re
+    hits: list[str] = []
+    lowered = body.lower()
+    for term in _FORBIDDEN_WORDS:
+        # whole-word match for single words, substring for multi-word phrases
+        if " " in term or "-" in term:
+            if term.lower() in lowered:
+                hits.append(term)
+        else:
+            if re.search(rf"\b{re.escape(term)}\b", lowered):
+                hits.append(term)
+    for pattern in _ENGAGEMENT_BAIT_PATTERNS:
+        if pattern in lowered:
+            hits.append(pattern)
+    return hits
+
 
 async def text_writer_node(state: SignalAgentState) -> SignalAgentState:
     """Produce one text post per enabled text platform for the given Signal.
@@ -225,15 +299,48 @@ async def _write_post(
     s_ = settings()
     tier = "smart" if (s_.openai_api_key or s_.anthropic_api_key) else "cheap"
     mc = pick(tier)
-    raw = await _call_llm(
-        mc,
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
-    # The LLM may include framing like "Here's the post:" — strip to the body
-    return _extract_body(raw)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    raw = await _call_llm(mc, messages)
+    body = _extract_body(raw)
+
+    # Post-hoc forbidden-terms check. If the LLM slipped hype adjectives,
+    # marketing verbs, or engagement-bait questions past the system prompt,
+    # regenerate ONCE with an explicit inline ban. If it slips again, log a
+    # warning and ship the second draft — we don't want an infinite retry
+    # loop burning tokens on a stubborn signal.
+    hits = _forbidden_hits(body)
+    if hits:
+        log.info(
+            "text_writer.forbidden_hits_regen",
+            platform=f"upload_post_{platform_short}",
+            brand_id=brand_id,
+            hits=hits,
+        )
+        ban_msg = (
+            "Your last draft used banned phrases: "
+            + ", ".join(f'"{h}"' for h in hits)
+            + ". Rewrite the post without any of these phrases and without "
+            "any other hype adjectives or marketing verbs. Keep the same "
+            "factual content — just change the wording."
+        )
+        retry_messages = messages + [
+            {"role": "assistant", "content": body},
+            {"role": "user", "content": ban_msg},
+        ]
+        raw = await _call_llm(mc, retry_messages)
+        body = _extract_body(raw)
+        second_hits = _forbidden_hits(body)
+        if second_hits:
+            log.warning(
+                "text_writer.forbidden_hits_persisted",
+                platform=f"upload_post_{platform_short}",
+                brand_id=brand_id,
+                hits=second_hits,
+            )
+    return body
 
 
 def _build_system_prompt(
@@ -254,6 +361,9 @@ def _build_system_prompt(
             "- Max 2 hashtags. Place them at the end, natural only.\n"
             "- NO external link in post body for Premium reach (link only if essential).\n"
             "- Specific numbers beat vague claims (say '14d ROAS 1.24×' not 'great ROAS').\n"
+            "- ABSOLUTELY NO engagement-bait closing questions: 'What do you think?',\n"
+            "  'Thoughts?', 'Agree?', 'What's your take?'. These patterns are forbidden.\n"
+            "  End on a declarative statement or a link instead.\n"
         ),
         "linkedin": (
             f"Platform: LinkedIn. Max {limit} chars; aim for {target_chars} (sweet spot 1300-2500).\n"
@@ -262,13 +372,39 @@ def _build_system_prompt(
             "- One sentence per line. White space between ideas.\n"
             "- 3-5 hashtags at the end (never scattered).\n"
             "- No external link at the top — put it plain-text near the end if needed.\n"
-            "- Concrete metrics and decisions > abstract claims.\n"
-            "- End with a thought that invites engagement (not 'what do you think?' bait).\n"
+            "- Concrete decisions and specifics > abstract claims.\n"
+            "- ABSOLUTELY NO engagement-bait closing questions: 'What do you think?',\n"
+            "  'Thoughts?', 'Agree?', 'Curious what you think?'. Ending on a genuine\n"
+            "  open question about a specific technical decision is fine. Generic\n"
+            "  engagement-farming questions are not.\n"
         ),
     }.get(platform_short, "")
 
+    # Per-brand voice enforcement. The voice file says this, but LLMs diffuse
+    # single-sentence rules. Repeat the most important ones at the top of the
+    # prompt in bold "do not" form.
+    if brand_id == "glitch_founder":
+        voice_rules = (
+            "VOICE IS TEJAS (first-person singular only):\n"
+            "- Use 'I', 'me', 'my' exclusively. NEVER 'we', 'our', 'our team'.\n"
+            "- If the signal describes team work, reframe as what I personally did,\n"
+            "  learned, noticed, or decided. Example — not 'we launched Priya',\n"
+            "  say 'I shipped Priya this week' or 'I've been working on Priya'.\n"
+            "- This is a personal learning log, not a company announcement.\n"
+            "- Lead with a feeling, an observation, or a specific moment — not a fact.\n"
+        )
+    else:
+        voice_rules = (
+            "VOICE IS GLITCH EXECUTOR (the lab, first-person plural):\n"
+            "- Use 'we', 'our', 'we shipped'. Do not write in the first-person 'I'.\n"
+            "- Technical and factual. Describe the build, not the results we have\n"
+            "  not yet measured.\n"
+        )
+
     return (
         f"{voice_text}\n\n"
+        f"---\n"
+        f"{voice_rules}\n"
         f"---\n"
         f"{platform_rules}\n"
         f"---\n"
