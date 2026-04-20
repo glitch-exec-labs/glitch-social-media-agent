@@ -92,12 +92,19 @@ def extract_request_id(token: str) -> str:
 
 async def publish(
     platform: str,
-    file_path: str,
+    file_path: str | None,
     script_id: str,
     brand_id: str | None = None,
     attempts: int = 1,
 ) -> tuple[str, str | None]:
-    """Publish a video via Upload-Post. Returns (provider_post_id, share_url|None).
+    """Publish content via Upload-Post. Returns (provider_post_id, share_url|None).
+
+    Routes to the right Upload-Post SDK method based on `content_type` in the
+    brand platform config block:
+      - "video"    (default) → upload_video
+      - "text"               → upload_text   (LinkedIn, X, Threads, …)
+      - "image"              → upload_photos (LinkedIn, Instagram, …)
+      - "document"           → upload_document (LinkedIn PDF carousel)
 
     `attempts` is the scheduler's attempt counter for this ScheduledPost (1 on
     the first call, ≥2 on retries). Unlike Zernio, Upload-Post does NOT dedup
@@ -138,11 +145,71 @@ async def publish(
             f"platforms.{platform}.user — the Upload-Post managed-user profile name"
         )
 
+    content_type = cfg_block.get("content_type", "video")
+    caption, title, _hashtags = await _read_caption(script_id, brand_id, cfg_block)
+
+    # ── Text post ────────────────────────────────────────────────────────────
+    if content_type == "text":
+        request_id = await asyncio.to_thread(
+            _submit_text,
+            api_key=s.upload_post_api_key,
+            user=user,
+            target_platform=target,
+            caption=caption,
+            extras=_linkedin_extras(cfg_block) if target == "linkedin" else {},
+        )
+        return f"{_WEBHOOK_PENDING_PREFIX}{request_id}", None
+
+    # ── Image post ───────────────────────────────────────────────────────────
+    if content_type == "image":
+        image_path = cfg_block.get("image_path") or file_path
+        if not image_path:
+            raise ValueError(
+                f"upload_post.publish: content_type=image on {platform!r} "
+                "requires platforms.<key>.image_path in brand config or a file_path"
+            )
+        request_id = await asyncio.to_thread(
+            _submit_image,
+            api_key=s.upload_post_api_key,
+            user=user,
+            target_platform=target,
+            image_path=image_path,
+            caption=caption,
+            extras=_linkedin_extras(cfg_block) if target == "linkedin" else {},
+        )
+        return f"{_WEBHOOK_PENDING_PREFIX}{request_id}", None
+
+    # ── Document / PDF carousel ──────────────────────────────────────────────
+    if content_type == "document":
+        document_path = cfg_block.get("document_path")
+        if not document_path:
+            raise ValueError(
+                f"upload_post.publish: content_type=document on {platform!r} "
+                "requires platforms.<key>.document_path in brand config"
+            )
+        li_extras: dict = {}
+        if cfg_block.get("target_linkedin_page_id"):
+            li_extras["target_linkedin_page_id"] = cfg_block["target_linkedin_page_id"]
+        if cfg_block.get("visibility"):
+            li_extras["visibility"] = cfg_block["visibility"]
+        request_id = await asyncio.to_thread(
+            _submit_document,
+            api_key=s.upload_post_api_key,
+            user=user,
+            document_path=document_path,
+            title=title,
+            caption=caption,
+            extras=li_extras,
+        )
+        return f"{_WEBHOOK_PENDING_PREFIX}{request_id}", None
+
+    # ── Video (default) ──────────────────────────────────────────────────────
+    if not file_path:
+        raise ValueError(f"upload_post.publish: file_path is required for content_type=video on {platform!r}")
+
     path = pathlib.Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"upload_post.publish: file missing: {file_path}")
-
-    caption, title, _hashtags = await _read_caption(script_id, brand_id, cfg_block)
 
     # Retry-path idempotency: if this is the 2nd+ attempt, check whether a
     # prior attempt already published successfully on Upload-Post's side.
@@ -342,6 +409,90 @@ def _submit_upload(
         request_id=request_id,
     )
     return request_id
+
+
+def _submit_text(
+    *,
+    api_key: str,
+    user: str,
+    target_platform: str,
+    caption: str,
+    extras: dict,
+) -> str:
+    import upload_post
+
+    client = upload_post.UploadPostClient(api_key=api_key)
+    resp = client.upload_text(title=caption, user=user, platforms=[target_platform], **extras)
+    if not resp.get("success", True):
+        raise RuntimeError(f"Upload-Post upload_text failed: {resp}")
+    request_id = (
+        resp.get("request_id")
+        or (resp.get("results", {}) or {}).get("request_id")
+        or str(uuid.uuid4())
+    )
+    log.info("upload_post.publish.text_submitted", target=target_platform, user=user, request_id=request_id)
+    return request_id
+
+
+def _submit_image(
+    *,
+    api_key: str,
+    user: str,
+    target_platform: str,
+    image_path: str,
+    caption: str,
+    extras: dict,
+) -> str:
+    import upload_post
+
+    client = upload_post.UploadPostClient(api_key=api_key)
+    resp = client.upload_photos(
+        image_paths=[image_path], title=caption, user=user, platforms=[target_platform], **extras
+    )
+    if not resp.get("success", True):
+        raise RuntimeError(f"Upload-Post upload_photos failed: {resp}")
+    request_id = (
+        resp.get("request_id")
+        or (resp.get("results", {}) or {}).get("request_id")
+        or str(uuid.uuid4())
+    )
+    log.info("upload_post.publish.image_submitted", target=target_platform, user=user, request_id=request_id)
+    return request_id
+
+
+def _submit_document(
+    *,
+    api_key: str,
+    user: str,
+    document_path: str,
+    title: str,
+    caption: str,
+    extras: dict,
+) -> str:
+    import upload_post
+
+    client = upload_post.UploadPostClient(api_key=api_key)
+    resp = client.upload_document(
+        document_path=document_path, title=title, user=user, description=caption, **extras
+    )
+    if not resp.get("success", True):
+        raise RuntimeError(f"Upload-Post upload_document failed: {resp}")
+    request_id = (
+        resp.get("request_id")
+        or (resp.get("results", {}) or {}).get("request_id")
+        or str(uuid.uuid4())
+    )
+    log.info("upload_post.publish.document_submitted", user=user, request_id=request_id)
+    return request_id
+
+
+def _linkedin_extras(cfg_block: dict) -> dict:
+    extras: dict = {}
+    if cfg_block.get("target_linkedin_page_id"):
+        extras["target_linkedin_page_id"] = cfg_block["target_linkedin_page_id"]
+    if cfg_block.get("linkedin_link_url"):
+        extras["linkedin_link_url"] = cfg_block["linkedin_link_url"]
+    return extras
 
 
 async def poll_status_for_request(

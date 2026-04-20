@@ -69,10 +69,12 @@ dependencies = [
   # own per-platform dev apps are unaudited (TikTok today).
   "zernio-sdk>=1.3",
 
-  # Upload-Post — alternative audited vendor. Cheaper at real volume and
-  # with a richer API surface (analytics, comments, scheduled-post mgmt,
-  # webhooks). Lives alongside Zernio, not a replacement.
-  "upload-post>=2.1",
+  # Replicate — image generation via recraft-v3 / FLUX for LinkedIn image posts.
+  "replicate>=1.0",
+
+  # Upload-Post — forked to glitch-exec-labs/upload-post-pip so we can
+  # track upstream releases and patch LinkedIn document support as needed.
+  "upload-post @ git+https://github.com/glitch-exec-labs/upload-post-pip.git@main",
 ]
 
 [project.optional-dependencies]

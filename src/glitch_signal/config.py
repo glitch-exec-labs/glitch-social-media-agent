@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     veo_api_key: str = ""       # Phase 2
     hailuo_api_key: str = ""    # Phase 2
 
+    # --- Image generation (Replicate) ---
+    replicate_api_token: str = ""
+    replicate_image_model: str = "recraft-ai/recraft-v3"
+
     # --- Platforms (Phase 1: YouTube) ---
     youtube_client_secrets_file: str = "credentials/youtube_client_secrets.json"
     youtube_channel_id: str = ""
