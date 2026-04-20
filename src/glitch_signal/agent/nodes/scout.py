@@ -13,6 +13,12 @@ from datetime import UTC, datetime
 import httpx
 import litellm
 import structlog
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from glitch_signal.agent.llm import pick
@@ -66,13 +72,26 @@ def _gh_headers() -> dict:
 
 
 async def _list_org_repos() -> list[str]:
-    org = settings().github_org
+    """List repos for the configured GitHub owner.
+
+    Handles both account types transparently: /orgs/{x}/repos returns 404 on
+    user accounts, so we fall back to /users/{x}/repos if the org endpoint
+    misses. glitch-exec-labs is a user account, not an org — this matters.
+    """
+    owner = settings().github_org
+    params = {"per_page": 100, "sort": "pushed"}
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{GITHUB_API}/orgs/{org}/repos",
+            f"{GITHUB_API}/orgs/{owner}/repos",
             headers=_gh_headers(),
-            params={"per_page": 100, "sort": "pushed"},
+            params=params,
         )
+        if resp.status_code == 404:
+            resp = await client.get(
+                f"{GITHUB_API}/users/{owner}/repos",
+                headers=_gh_headers(),
+                params=params,
+            )
         resp.raise_for_status()
     return [r["name"] for r in resp.json() if not r.get("archived")]
 
@@ -220,27 +239,42 @@ Score below 0.6 for: chores, minor fixes, version bumps, docs typos
 Respond with JSON only: {"score": 0.0-1.0, "summary": "one sentence for the post topic"}"""
 
 
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type(
+        (litellm.ServiceUnavailableError, litellm.RateLimitError, litellm.APIConnectionError)
+    ),
+)
+async def _call_novelty_llm(mc, text: str) -> str:
+    resp = await litellm.acompletion(
+        model=mc.model,
+        messages=[
+            {"role": "system", "content": _NOVELTY_SYSTEM},
+            {"role": "user", "content": text},
+        ],
+        response_format={"type": "json_object"},
+        # Gemini 2.5 Flash spends its first ~800-1000 tokens on internal
+        # "thinking" before emitting output. 2048 is the first value that
+        # consistently returns a complete JSON object.
+        max_tokens=2048,
+        **mc.kwargs,
+    )
+    return resp.choices[0].message.content or "{}"
+
+
 async def _score_novelty(text: str, source_type: str) -> tuple[float, str]:
     if settings().is_dry_run:
         return 0.75, f"[dry-run] {text[:80]}"
 
     mc = pick("cheap")
     try:
-        resp = await litellm.acompletion(
-            model=mc.model,
-            messages=[
-                {"role": "system", "content": _NOVELTY_SYSTEM},
-                {"role": "user", "content": text},
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=100,
-            **mc.kwargs,
-        )
-        raw = resp.choices[0].message.content or "{}"
+        raw = await _call_novelty_llm(mc, text)
         data = json.loads(raw)
         score = float(data.get("score", 0.0))
         summary = str(data.get("summary", text[:80]))
         return score, summary
     except Exception as exc:
-        log.warning("scout.novelty_score_failed", error=str(exc))
+        log.warning("scout.novelty_score_failed", error=str(exc)[:200])
         return 0.0, ""
