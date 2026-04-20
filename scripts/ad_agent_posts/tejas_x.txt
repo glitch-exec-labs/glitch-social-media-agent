@@ -4,4 +4,4 @@ Shipped today: ad agent proposes budget changes in Telegram with reasoning attac
 
 I approve. Done.
 
-github.com/glitch-exec-labs/glitch-grow-ads-agent
+github.com/glitch-exec-labs/glitch-grow-ai-ads-agent

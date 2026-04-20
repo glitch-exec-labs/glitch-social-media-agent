@@ -20,6 +20,6 @@ The pattern that keeps showing up in our work: full autonomy on money decisions 
 
 Same shape as the Oracle in our trading stack. Same shape as the 48-hour approval window on our social media agent. We keep ending up here because it keeps working.
 
-github.com/glitch-exec-labs/glitch-grow-ads-agent
+github.com/glitch-exec-labs/glitch-grow-ai-ads-agent
 
 #buildinpublic #glitchexecutor #metaads #ai #adops
