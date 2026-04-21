@@ -23,7 +23,10 @@ credentials/
 *.json.credentials
 youtube_token.json
 
-# Brand configs (private — real values live on the deployed box only)
+# Brand configs (private — real values live on the deployed box only).
+# The `brand/` dir is ALSO the working tree of a nested private git repo
+# (glitch-grow-ai-social-media-agent-private). Its README.md and .gitignore
+# are owned by that private repo and must NOT be tracked by this one.
 brand.config.json
 brand/configs/*.json
 !brand/configs/.gitkeep
@@ -32,6 +35,8 @@ brand/prompts/*.md
 brand/audio/*
 !brand/audio/.gitkeep
 !brand/audio/README.md
+brand/README.md
+brand/.gitignore
 
 # Generated videos — large binary files
 /var/lib/glitch-signal/
