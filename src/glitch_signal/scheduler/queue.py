@@ -75,8 +75,34 @@ async def _tick() -> None:
         _reconcile_awaiting_webhook(),
         _pull_post_analytics(),
         _cleanup_posted_media(),
+        _sweep_comments_tick(),
         return_exceptions=True,
     )
+
+
+_comment_sweep_last: datetime | None = None
+
+
+async def _sweep_comments_tick() -> None:
+    """Fire comments.sweep_comments() at most once every 10 minutes.
+
+    The scheduler tick itself runs every 30s; we don't need that cadence for
+    comment polling. 10 min keeps the engagement window tight without
+    spamming Upload-Post's get_post_comments endpoint.
+    """
+    global _comment_sweep_last
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    if _comment_sweep_last and (now - _comment_sweep_last) < timedelta(minutes=10):
+        return
+    _comment_sweep_last = now
+
+    from glitch_signal.comments.sweeper import sweep_comments
+
+    try:
+        await sweep_comments()
+    except Exception as exc:
+        log.warning("scheduler.comments_sweep_failed", error=str(exc)[:200])
 
 
 async def _cleanup_posted_media() -> None:

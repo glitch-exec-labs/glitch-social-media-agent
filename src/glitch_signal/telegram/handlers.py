@@ -54,7 +54,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/veto <id>       — veto a pending_veto post\n"
         "/orm             — last 10 mention events with tier\n"
         "/orm_approve <id> — approve a pending_review ORM response\n"
-        "/orm_veto <id>   — veto a pending_review ORM response"
+        "/orm_veto <id>   — veto a pending_review ORM response\n"
+        "/reply <url> [brand|founder]       — draft a reply to an X/LinkedIn post\n"
+        "/reply_with_text <url> :: <text>   — same, but paste the post text inline"
     )
 
 
@@ -263,6 +265,18 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
     elif data.startswith("orm_veto:"):
         resp_id = data[9:]
         await _veto_orm_response(resp_id, update, query=query)
+    elif data.startswith("rply_a:"):
+        reply_id = data[7:]
+        await _approve_comment_reply(reply_id, update, query=query)
+    elif data.startswith("rply_v:"):
+        reply_id = data[7:]
+        await _veto_comment_reply(reply_id, update, query=query)
+    elif data.startswith("strply_a:"):
+        sr_id = data[9:]
+        await _approve_strategic_reply(sr_id, update, query=query)
+    elif data.startswith("strply_v:"):
+        sr_id = data[9:]
+        await _veto_strategic_reply(sr_id, update, query=query)
 
 
 # ---------------------------------------------------------------------------
@@ -325,3 +339,140 @@ async def _veto_orm_response(resp_id: str, update, query=None) -> None:
     text = f"ORM response {resp_id[:8]} vetoed."
     reply = query.edit_message_text if query else update.message.reply_text
     await reply(text)
+
+
+# ---------------------------------------------------------------------------
+# Comment-reply handlers (Feature #1: engagement on our own posts)
+# ---------------------------------------------------------------------------
+
+async def _approve_comment_reply(reply_id: str, update, query=None) -> None:
+    from glitch_signal.comments.sweeper import approve_reply
+
+    ok, msg = await approve_reply(reply_id)
+    text = f"Comment reply {reply_id[:8]} — {msg}"
+    reply = query.edit_message_text if query else update.message.reply_text
+    await reply(text)
+
+
+async def _veto_comment_reply(reply_id: str, update, query=None) -> None:
+    from glitch_signal.comments.sweeper import veto_reply
+
+    ok, msg = await veto_reply(reply_id)
+    text = f"Comment reply {reply_id[:8]} — {msg}"
+    reply = query.edit_message_text if query else update.message.reply_text
+    await reply(text)
+
+
+# ---------------------------------------------------------------------------
+# Strategic-reply handlers (Feature #2: reply to other people's posts)
+# ---------------------------------------------------------------------------
+
+async def _approve_strategic_reply(sr_id: str, update, query=None) -> None:
+    from glitch_signal.comments.strategic import approve_strategic
+
+    ok, msg = await approve_strategic(sr_id)
+    text = f"Strategic reply {sr_id[:8]} — {msg}"
+    reply = query.edit_message_text if query else update.message.reply_text
+    await reply(text)
+
+
+async def _veto_strategic_reply(sr_id: str, update, query=None) -> None:
+    from glitch_signal.comments.strategic import veto_strategic
+
+    ok, msg = await veto_strategic(sr_id)
+    text = f"Strategic reply {sr_id[:8]} — {msg}"
+    reply = query.edit_message_text if query else update.message.reply_text
+    await reply(text)
+
+
+# ---------------------------------------------------------------------------
+# Strategic reply — /reply and /reply_with_text commands
+# ---------------------------------------------------------------------------
+
+async def cmd_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/reply <url>                  → founder voice, auto-fetch post text
+    /reply <url> brand             → brand voice
+    /reply <url> founder           → founder voice (explicit)
+    """
+    if not _is_admin(update):
+        return
+    args = ctx.args or []
+    if not args:
+        await update.message.reply_text(
+            "Usage: /reply <url> [brand|founder]\n"
+            "If auto-fetch fails, use /reply_with_text <url> :: <post text>"
+        )
+        return
+
+    url = args[0]
+    voice = (args[1].lower() if len(args) > 1 else "founder").strip()
+    brand_id = "glitch_executor" if voice == "brand" else "glitch_founder"
+
+    from glitch_signal.comments.strategic import queue_strategic_reply
+
+    sr_id, payload = await queue_strategic_reply(
+        target_url=url,
+        brand_id=brand_id,
+        requested_by=str(update.effective_user.id) if update.effective_user else None,
+    )
+    if not sr_id:
+        await update.message.reply_text(payload)
+        return
+
+    await _send_strategic_preview(update, sr_id, brand_id, payload)
+
+
+async def cmd_reply_with_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/reply_with_text <url> :: <pasted post text>     (founder voice)
+    /reply_with_text <url> :: <pasted post text> :: brand
+    """
+    if not _is_admin(update):
+        return
+    raw = (update.message.text or "").split(maxsplit=1)
+    if len(raw) < 2:
+        await update.message.reply_text(
+            "Usage: /reply_with_text <url> :: <post text> [:: brand|founder]"
+        )
+        return
+
+    parts = [p.strip() for p in raw[1].split("::")]
+    if len(parts) < 2:
+        await update.message.reply_text(
+            "Separate the URL from the post text with '::'. "
+            "Optionally add another :: brand|founder at the end."
+        )
+        return
+    url, target_text = parts[0], parts[1]
+    voice = parts[2].lower() if len(parts) > 2 else "founder"
+    brand_id = "glitch_executor" if voice == "brand" else "glitch_founder"
+
+    from glitch_signal.comments.strategic import queue_from_text
+
+    sr_id, payload = await queue_from_text(
+        target_url=url,
+        target_text=target_text,
+        brand_id=brand_id,
+        requested_by=str(update.effective_user.id) if update.effective_user else None,
+    )
+    if not sr_id:
+        await update.message.reply_text(payload)
+        return
+
+    await _send_strategic_preview(update, sr_id, brand_id, payload)
+
+
+async def _send_strategic_preview(
+    update, sr_id: str, brand_id: str, drafted_reply: str
+) -> None:
+    display = brand_config(brand_id).get("display_name", brand_id)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Post reply", callback_data=f"strply_a:{sr_id}"),
+        InlineKeyboardButton("Skip", callback_data=f"strply_v:{sr_id}"),
+    ]])
+    msg = (
+        f"[{display}] Strategic reply draft\n"
+        f"ID: {sr_id[:8]}\n"
+        f"───\n"
+        f"Drafted reply:\n{drafted_reply}"
+    )
+    await update.message.reply_text(msg, reply_markup=keyboard)

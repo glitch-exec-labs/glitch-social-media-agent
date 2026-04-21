@@ -233,3 +233,65 @@ class OrmResponse(SQLModel, table=True):
     sent_by: str | None = None        # auto | human
     telegram_message_id: int | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# CommentReply — engagement on our own published posts
+# ---------------------------------------------------------------------------
+
+class CommentReply(SQLModel, table=True):
+    """One row per incoming comment on one of our published posts.
+
+    The sweeper discovers these via Upload-Post get_post_comments, triages
+    them, drafts a reply in brand voice, and posts via reply_to_comment
+    after Telegram approval.
+    """
+    __tablename__ = "comment_reply"
+
+    id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True)
+    platform: str                                      # x | linkedin | tiktok | ...
+    published_post_id: str | None = None               # FK-ish to PublishedPost.id
+    platform_post_id: str = Field(index=True)          # the vendor post id (e.g. urn:li:ugcPost:...)
+    platform_comment_id: str = Field(unique=True)      # vendor comment id
+    commenter_handle: str | None = None
+    commenter_name: str | None = None
+    comment_text: str
+    comment_created_at: datetime | None = None
+    triage_tier: str | None = None                     # reply_worthy | spam | promo | skip
+    status: str = Field(default="new", index=True)
+    # new | drafted | pending_approval | posted | ignored | failed
+    drafted_reply: str | None = None
+    posted_reply_id: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime | None = None
+
+
+# ---------------------------------------------------------------------------
+# StrategicReply — reply we want to leave on someone else's post
+# ---------------------------------------------------------------------------
+
+class StrategicReply(SQLModel, table=True):
+    """One row per "operator wants to reply to this post."
+
+    Covers the 70/30 growth pattern. For X, can be posted programmatically
+    via upload_text with quote_tweet_id. For LinkedIn, the drafted reply
+    comes back to the operator as copy-ready text (LinkedIn API doesn't
+    let third parties comment on arbitrary posts).
+    """
+    __tablename__ = "strategic_reply"
+
+    id: str = Field(primary_key=True)
+    brand_id: str = Field(index=True)
+    target_platform: str                             # x | linkedin | unknown
+    target_post_url: str
+    target_post_id: str | None = None
+    target_author_handle: str | None = None
+    target_post_text: str | None = None
+    drafted_reply: str | None = None
+    status: str = Field(default="new", index=True)
+    # new | drafted | pending_approval | posted | copied | vetoed | failed
+    requested_by_telegram_id: str | None = None
+    posted_platform_post_id: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime | None = None

@@ -35,6 +35,8 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("orm", handlers.cmd_orm))
     app.add_handler(CommandHandler("orm_approve", handlers.cmd_orm_approve))
     app.add_handler(CommandHandler("orm_veto", handlers.cmd_orm_veto))
+    app.add_handler(CommandHandler("reply", handlers.cmd_reply))
+    app.add_handler(CommandHandler("reply_with_text", handlers.cmd_reply_with_text))
 
     # Inline keyboard callbacks
     app.add_handler(CallbackQueryHandler(handlers.callback_handler))
