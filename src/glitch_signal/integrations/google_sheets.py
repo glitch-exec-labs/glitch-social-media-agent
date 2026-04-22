@@ -196,9 +196,14 @@ def _append_row_sync(
 ) -> None:
     svc = _service()
     values = [[_stringify(row.get(col, "")) for col in columns]]
+    # Use a full-row range for the append anchor so Sheets' "last row"
+    # detection considers every column, not just A. Single-column A:A
+    # anchors misbehave on freshly-created sheets with 1000 pre-provisioned
+    # empty rows — append lands at row ~60 instead of row 2 and the
+    # operator thinks the sheet is empty.
     svc.spreadsheets().values().append(
         spreadsheetId=sheet_id,
-        range=f"'{worksheet}'!A:A",
+        range=f"'{worksheet}'!A:J",
         valueInputOption="USER_ENTERED",   # allow hyperlink / date parsing
         insertDataOption="INSERT_ROWS",
         body={"values": values},
