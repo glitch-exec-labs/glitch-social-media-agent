@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     fal_api_key: str = ""
     fal_image_model: str = "fal-ai/flux/schnell"
 
+    # --- Sheet-driven posting (scheduled from a Google Sheet) ---
+    # When set, the scheduler reads this sheet and fires queued posts at the
+    # configured cadence. Columns are managed by sheet_posting.reader.
+    glitch_posts_sheet_id: str = ""
+    glitch_posts_worksheet: str = "queue"
+    # Minimum gap between two posts on the same (brand, platform) pair.
+    glitch_posts_min_interval_minutes: int = 240  # 4 hours
+    # Max posts per (brand, platform) per UTC calendar day.
+    glitch_posts_daily_cap: int = 2
+
     # --- Platforms (Phase 1: YouTube) ---
     youtube_client_secrets_file: str = "credentials/youtube_client_secrets.json"
     youtube_channel_id: str = ""

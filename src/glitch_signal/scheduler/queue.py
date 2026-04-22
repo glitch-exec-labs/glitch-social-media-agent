@@ -76,8 +76,42 @@ async def _tick() -> None:
         _pull_post_analytics(),
         _cleanup_posted_media(),
         _sweep_comments_tick(),
+        _sheet_posting_tick(),
         return_exceptions=True,
     )
+
+
+_sheet_posting_last: datetime | None = None
+
+
+async def _sheet_posting_tick() -> None:
+    """Fire one sheet-driven post if one is due. Rate-limited to every 5 min.
+
+    The pacing rules inside reader.fetch_next_due (min interval + daily cap
+    per brand/platform) mean that firing every 5 min is safe — most ticks
+    will return None and no post goes out. When a post IS due, one row is
+    posted and marked in the sheet.
+    """
+    global _sheet_posting_last
+
+    if not settings().glitch_posts_sheet_id:
+        return
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    if _sheet_posting_last and (now - _sheet_posting_last) < timedelta(minutes=5):
+        return
+    _sheet_posting_last = now
+
+    try:
+        from glitch_signal.sheet_posting.poster import post_one
+        from glitch_signal.sheet_posting.reader import fetch_next_due
+
+        row = await fetch_next_due(now=now)
+        if not row:
+            return
+        await post_one(row)
+    except Exception as exc:
+        log.warning("scheduler.sheet_posting_tick_failed", error=str(exc)[:200])
 
 
 _comment_sweep_last: datetime | None = None
