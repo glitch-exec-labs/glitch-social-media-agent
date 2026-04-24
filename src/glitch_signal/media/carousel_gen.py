@@ -2,18 +2,23 @@
 
 LinkedIn document posts (PDF carousels) are the highest-engagement format on
 the platform — 24.42% avg vs ~4% for text-only. This module produces one
-ready-to-upload PDF per signal for a text brand, using:
+ready-to-upload PDF per signal for a text brand.
 
-  1. Claude / Gemini  → slide structure (hook, N body slides, CTA)
-  2. fal.ai FLUX      → one branded background per slide (dark + brand accent)
-  3. Pillow           → text overlay (title + body + slide number) on each slide
-  4. img2pdf          → compile into a single PDF
+Rendering pipeline (April 2026 rebuild):
 
-Output landing pad: `{settings.video_storage_path}/carousels/{brand_id}/<uuid>.pdf`.
-Every call produces a fresh file; re-runs never overwrite.
+  1. LLM           → slide structure (hook, N body slides, CTA)
+  2. gpt-image-2   → one fully-designed slide per entry, text rendered
+                     inside the image by the model, Canva-level typography
+                     and composition; no Pillow overlay
+  3. img2pdf       → stitch slide PNGs into a single PDF
 
-Pair with upload_post.publish() content_type="document" to land the PDF on
-LinkedIn as a native document post (highest-distribution format).
+Previously used FLUX-schnell for backgrounds + Pillow to overlay text. The
+overlay looked "stamped" — text sat on top of a background rather than
+being part of the composition. gpt-image-2 renders short-to-medium text
+first-try with brand-consistent design, so we switched.
+
+Output lands at `{settings.video_storage_path}/carousels/{brand_id}/<uuid>.pdf`.
+Every call produces a fresh file.
 """
 from __future__ import annotations
 
@@ -36,7 +41,10 @@ from tenacity import (
 from glitch_signal.agent.llm import pick
 from glitch_signal.config import brand_config, settings
 from glitch_signal.db.models import Signal
-from glitch_signal.media.image_gen import generate_image
+from glitch_signal.media.image_gen import (
+    generate_designed_image,
+    generate_image,  # retained for legacy callers; new path uses designed
+)
 
 log = structlog.get_logger(__name__)
 
@@ -141,80 +149,56 @@ async def generate_carousel(
             cta_link=cta_link,
         )
     total_slides = 1 + len(slide_data["body"]) + 1
+    accent, base, secondary = _brand_colors(brand_id)
 
-    # Generate background images in parallel (cheap on fal.ai; ~2s each sync).
-    background_paths = await _generate_backgrounds(
-        slide_data=slide_data, brand_id=brand_id, total=total_slides
-    )
+    # Build prompts per slide (hook, body[], cta) and generate in parallel.
+    # gpt-image-2 renders the full designed slide — text + composition in
+    # one pass, no Pillow overlay. Parallel generation cuts wall time by ~7×.
+    specs: list[tuple[str, str]] = []  # (slide_role, prompt)
+    specs.append((
+        "hook",
+        _build_slide_prompt(
+            role="hook", slide_num=1, slide_total=total_slides,
+            title=slide_data["hook"]["title"],
+            body=slide_data["hook"]["subtitle"],
+            accent=accent, base=base, secondary=secondary,
+        ),
+    ))
+    for i, body in enumerate(slide_data["body"], start=2):
+        specs.append((
+            f"body_{i:02d}",
+            _build_slide_prompt(
+                role="body", slide_num=i, slide_total=total_slides,
+                title=body["title"], body=body["body"],
+                accent=accent, base=base, secondary=secondary,
+            ),
+        ))
+    specs.append((
+        "cta",
+        _build_slide_prompt(
+            role="cta", slide_num=total_slides, slide_total=total_slides,
+            title=slide_data["cta"]["title"],
+            body=slide_data["cta"]["subtitle"],
+            link=slide_data["cta"].get("link", ""),
+            accent=accent, base=base, secondary=secondary,
+        ),
+    ))
 
-    # Compose each slide's PNG with text overlay
+    # Fire all slide generations in parallel. Hook + CTA use quality=high
+    # (bookend slides, worth the spend); body slides use medium.
+    async def _one(role: str, prompt: str) -> pathlib.Path:
+        q = "high" if role in ("hook", "cta") else "medium"
+        return await generate_designed_image(
+            prompt=prompt, brand_id=brand_id, aspect="4:5", quality=q,
+        )
+
+    slide_png_paths = await asyncio.gather(*[_one(r, p) for r, p in specs])
+
     out_dir = pathlib.Path(s.video_storage_path) / "carousels" / brand_id
     out_dir.mkdir(parents=True, exist_ok=True)
     carousel_id = uuid.uuid4().hex
-    slide_png_paths: list[pathlib.Path] = []
-
-    accent, base, secondary = _brand_colors(brand_id)
-
-    # Slide 1 — hook
-    hook_path = out_dir / f"{carousel_id}_01_hook.png"
-    _render_slide(
-        background_path=background_paths[0],
-        title=slide_data["hook"]["title"],
-        body=slide_data["hook"]["subtitle"],
-        slide_num=1,
-        slide_total=total_slides,
-        accent=accent,
-        base=base,
-        secondary=secondary,
-        title_size=78,
-        body_size=38,
-        is_hook=True,
-    ).save(hook_path, "PNG", optimize=True)
-    slide_png_paths.append(hook_path)
-
-    # Body slides
-    for i, body in enumerate(slide_data["body"], start=2):
-        p = out_dir / f"{carousel_id}_{i:02d}_body.png"
-        _render_slide(
-            background_path=background_paths[i - 1],
-            title=body["title"],
-            body=body["body"],
-            slide_num=i,
-            slide_total=total_slides,
-            accent=accent,
-            base=base,
-            secondary=secondary,
-        ).save(p, "PNG", optimize=True)
-        slide_png_paths.append(p)
-
-    # CTA slide
-    cta_idx = total_slides
-    cta_path = out_dir / f"{carousel_id}_{cta_idx:02d}_cta.png"
-    _render_slide(
-        background_path=background_paths[-1],
-        title=slide_data["cta"]["title"],
-        body=slide_data["cta"]["subtitle"] + "\n\n" + slide_data["cta"]["link"],
-        slide_num=cta_idx,
-        slide_total=total_slides,
-        accent=accent,
-        base=base,
-        secondary=secondary,
-        title_size=72,
-        body_size=40,
-        is_cta=True,
-    ).save(cta_path, "PNG", optimize=True)
-    slide_png_paths.append(cta_path)
-
-    # Compile to PDF
     pdf_path = out_dir / f"{carousel_id}.pdf"
-    _compile_pdf(slide_png_paths, pdf_path)
-
-    # Clean up intermediate PNGs (keep PDF only)
-    for p in slide_png_paths:
-        try:
-            p.unlink()
-        except OSError:
-            pass
+    _compile_pdf(list(slide_png_paths), pdf_path)
 
     log.info(
         "carousel.done",
@@ -451,7 +435,91 @@ async def _generate_backgrounds(
 
 
 # ---------------------------------------------------------------------------
-# Pillow: text overlay on a background image
+# gpt-image-2 slide prompts — one designed slide per role
+# ---------------------------------------------------------------------------
+
+def _build_slide_prompt(
+    *,
+    role: str,                 # hook | body | cta
+    slide_num: int,
+    slide_total: int,
+    title: str,
+    body: str,
+    accent: str,
+    base: str,
+    secondary: str,
+    link: str = "",
+) -> str:
+    """Write a gpt-image-2 prompt that renders ONE fully designed slide.
+
+    Each slide carries:
+      - Brand chrome: GLITCH · EXECUTOR wordmark (top-left) + accent bar
+      - Slide counter `NN / NN` in the top-right (secondary color)
+      - A title block and a body/subtitle block, rendered BY THE MODEL
+      - Thin progress bar at the bottom, filled to (slide_num / slide_total)
+      - Wordmark footer on hook + cta slides
+    """
+    counter = f"{slide_num:02d} / {slide_total:02d}"
+    progress_pct = int(100 * slide_num / slide_total)
+
+    chrome = (
+        f"Deep black background color {base} with very subtle dark neon green "
+        f"circuit-pattern texture fading in from the corners and edges. "
+        f"Top-left corner: a small bright neon green vertical accent bar in "
+        f"color {accent}, followed by small uppercase monospace white text "
+        f"'GLITCH · EXECUTOR'. "
+        f"Top-right corner: small monospace text '{counter}' in "
+        f"electric blue color {secondary}. "
+        f"Bottom of the image: a thin horizontal progress bar, {progress_pct} percent "
+        f"filled in bright neon green {accent} on a dim gray track, spanning "
+        f"the width with 80px side margins."
+    )
+
+    if role == "hook":
+        composition = (
+            "Main composition centered vertically, left-aligned with 90px "
+            "margins. Large bold sans-serif white headline text rendered as "
+            f"the title line: '{title}'. Below the title, a short bright "
+            f"neon green underline accent bar in color {accent}. Below that, "
+            f"medium-sized lighter-gray subtitle text: '{body}'. "
+            "Bottom-left above the progress bar: small monospace text "
+            "'glitchexecutor.com' in muted light gray, followed by a tiny "
+            f"blue {secondary} pip."
+        )
+    elif role == "cta":
+        composition = (
+            "Main composition centered, with upward convergent energy — "
+            "brand sign-off feel. Large bold sans-serif white headline: "
+            f"'{title}'. Thin bright neon green {accent} underline below. "
+            f"Medium subtitle text in lighter gray: '{body}'. "
+            f"{'Below the subtitle: the URL ' + link + ' rendered in neon green ' + accent + ' monospace, fitting within the 900px content width.' if link else ''} "
+            "Bottom-left above the progress bar: small monospace text "
+            "'glitchexecutor.com' in muted gray with a tiny blue pip next to it."
+        )
+    else:  # body
+        composition = (
+            "Main composition centered vertically, left-aligned with 90px "
+            "margins. Large bold sans-serif white headline on 1-2 lines: "
+            f"'{title}'. Short bright neon green {accent} underline bar "
+            f"beneath the title. Medium body text in lighter gray on 2-3 "
+            f"short lines: '{body}'. Plenty of breathing room above and "
+            "below the text block."
+        )
+
+    return (
+        f"A LinkedIn carousel slide, 4:5 portrait format, part of a cohesive "
+        f"set of {slide_total}. Glitch Executor brand aesthetic — dark, "
+        f"minimal, tech-lab, professional. No humans, no emojis, no clipart, "
+        f"no photos. Clean geometric sans-serif typography throughout. "
+        f"All text must render with perfect spelling.\n\n"
+        f"{chrome}\n\n"
+        f"{composition}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pillow: text overlay on a background image (LEGACY — unused since
+# April 2026 rebuild; kept as fallback if the gpt-image-2 path fails.)
 # ---------------------------------------------------------------------------
 
 def _render_slide(

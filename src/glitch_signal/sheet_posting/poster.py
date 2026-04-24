@@ -55,14 +55,21 @@ async def post_one(row: QueuedPost) -> tuple[bool, str]:
     target = row.platform.replace("upload_post_", "")
     text = row.body.strip()
     target_linkedin_page_id = block.get("target_linkedin_page_id") if target == "linkedin" else None
+    content_type = row.content_type or ("carousel" if target == "linkedin" else "text")
 
     try:
-        if target == "linkedin":
-            # LinkedIn posts go out as PDF carousel document posts.
-            # The sheet body is the post description; a carousel PDF is
-            # generated from it and attached as the LinkedIn document.
-            # Carousels are LinkedIn's highest-engagement native format
-            # (~24% vs ~4% for text-only).
+        if content_type == "quote_card":
+            # Single designed image (gpt-image-2) + original body as caption
+            resp = await _post_as_quote_card(
+                api_key=api_key,
+                user=user,
+                target=target,
+                brand_id=row.brand_id,
+                body=text,
+                target_linkedin_page_id=target_linkedin_page_id,
+            )
+        elif content_type == "carousel" and target == "linkedin":
+            # LinkedIn PDF carousel (multi-slide document post)
             resp = await _post_linkedin_as_carousel(
                 api_key=api_key,
                 user=user,
@@ -72,13 +79,14 @@ async def post_one(row: QueuedPost) -> tuple[bool, str]:
                 row_id=row.id,
             )
         else:
+            # Plain text post (default for X, also LinkedIn when content_type=text)
             resp = await asyncio.to_thread(
                 _post_to_upload_post,
                 api_key=api_key,
                 user=user,
                 target=target,
                 text=text,
-                target_linkedin_page_id=None,
+                target_linkedin_page_id=target_linkedin_page_id,
             )
     except Exception as exc:
         log.warning("sheet_posting.upload_failed", row_id=row.id, error=str(exc)[:200])
@@ -138,6 +146,38 @@ def _post_to_upload_post(
     if target == "linkedin" and target_linkedin_page_id:
         kwargs["target_linkedin_page_id"] = target_linkedin_page_id
     return client.upload_text(**kwargs)
+
+
+async def _post_as_quote_card(
+    *,
+    api_key: str,
+    user: str,
+    target: str,
+    brand_id: str,
+    body: str,
+    target_linkedin_page_id: str | None,
+) -> dict:
+    """Generate a designed image from the sheet body and upload it as an
+    image post. Body stays as the caption/description."""
+    from glitch_signal.sheet_posting.quote_card import generate_quote_card
+
+    image_path = await generate_quote_card(body=body, brand_id=brand_id)
+
+    def _upload() -> dict:
+        import upload_post
+
+        client = upload_post.UploadPostClient(api_key=api_key)
+        kwargs: dict = {
+            "photos": [str(image_path)],
+            "title": body,
+            "user": user,
+            "platforms": [target],
+        }
+        if target == "linkedin" and target_linkedin_page_id:
+            kwargs["target_linkedin_page_id"] = target_linkedin_page_id
+        return client.upload_photos(**kwargs)
+
+    return await asyncio.to_thread(_upload)
 
 
 async def _post_linkedin_as_carousel(

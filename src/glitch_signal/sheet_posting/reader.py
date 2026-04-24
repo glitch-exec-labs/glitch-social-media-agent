@@ -10,7 +10,16 @@ Sheet schema (row 1 = header):
                         for update_row_by_key on completion.
     brand_id            glitch_executor | glitch_founder
     platform            upload_post_x | upload_post_linkedin
-    body                post text (X ≤ 280 chars; LinkedIn ≤ 2800)
+    body                post text (X ≤ 280 chars; LinkedIn ≤ 2800).
+                        For quote_card + carousel rows, this is also the
+                        social-media caption shown alongside the image/PDF.
+    content_type        text | quote_card | carousel
+                        text         → plain text post (current default)
+                        quote_card   → gpt-image-2 designed image, body as
+                                       caption, uploaded as single image
+                        carousel     → LinkedIn PDF carousel (body becomes
+                                       description, slides are LLM-split
+                                       from body and rendered via gpt-image-2)
     status              queued | posted | failed | skip | draft
     scheduled_for       ISO datetime. Empty = "as soon as pacing allows".
     posted_at           Filled by poster on success.
@@ -36,6 +45,7 @@ SHEET_COLUMNS: list[str] = [
     "brand_id",
     "platform",
     "body",
+    "content_type",
     "status",
     "scheduled_for",
     "posted_at",
@@ -52,6 +62,7 @@ class QueuedPost:
     brand_id: str
     platform: str
     body: str
+    content_type: str
     status: str
     scheduled_for: datetime | None
     posted_at: datetime | None
@@ -61,11 +72,17 @@ class QueuedPost:
 
     @classmethod
     def from_row(cls, row: dict[str, str]) -> QueuedPost:
+        # content_type defaults: "carousel" for LinkedIn (legacy behaviour
+        # before the column existed), "text" for everything else.
+        platform = row.get("platform", "").strip()
+        default_ct = "carousel" if platform == "upload_post_linkedin" else "text"
+        content_type = (row.get("content_type") or "").strip().lower() or default_ct
         return cls(
             id=row.get("id", "").strip(),
             brand_id=row.get("brand_id", "").strip(),
-            platform=row.get("platform", "").strip(),
+            platform=platform,
             body=row.get("body", ""),
+            content_type=content_type,
             status=(row.get("status") or "draft").strip().lower(),
             scheduled_for=_parse_iso(row.get("scheduled_for", "")),
             posted_at=_parse_iso(row.get("posted_at", "")),
@@ -165,7 +182,7 @@ def _read_rows_sync(sheet_id: str, worksheet: str) -> list[dict[str, str]]:
     from glitch_signal.integrations.google_sheets import _service
 
     svc = _service()
-    rng = f"'{worksheet}'!A:J"
+    rng = f"'{worksheet}'!A:K"
     resp = svc.spreadsheets().values().get(
         spreadsheetId=sheet_id, range=rng,
     ).execute()

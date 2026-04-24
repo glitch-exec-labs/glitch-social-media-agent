@@ -203,7 +203,7 @@ def _append_row_sync(
     # operator thinks the sheet is empty.
     svc.spreadsheets().values().append(
         spreadsheetId=sheet_id,
-        range=f"'{worksheet}'!A:J",
+        range=f"'{worksheet}'!A:K",
         valueInputOption="USER_ENTERED",   # allow hyperlink / date parsing
         insertDataOption="INSERT_ROWS",
         body={"values": values},

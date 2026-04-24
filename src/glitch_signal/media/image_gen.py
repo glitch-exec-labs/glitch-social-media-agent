@@ -124,7 +124,120 @@ async def _generate_via_fal(prompt: str, aspect: AspectRatio, model: str) -> str
 
 async def _download(url: str, out_path: pathlib.Path) -> None:
     """Stream-download an image URL to disk."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         out_path.write_bytes(resp.content)
+
+
+# ---------------------------------------------------------------------------
+# Designed images via OpenAI gpt-image-2 (via fal.ai)
+#
+# Use for posts that need TEXT RENDERED INSIDE the image — quote cards,
+# stat reveals, carousel slides. gpt-image-2 nails short-to-medium text
+# first-try with strong design composition; FLUX-schnell is better for
+# abstract backgrounds where Pillow overlays the text.
+#
+# Pricing (fal.ai, Apr 2026): low ≈ $0.01, medium ≈ $0.04, high ≈ $0.17.
+# ---------------------------------------------------------------------------
+
+# fal.ai's gpt-image-2 aspect ratios use named enums, not pixel dimensions.
+_GPT_IMAGE_2_ASPECT: dict[str, str] = {
+    "1:1":  "square_hd",
+    "4:5":  "portrait_4_3",      # closest to 4:5 offered
+    "4:3":  "portrait_4_3",
+    "16:9": "landscape_16_9",
+}
+
+DesignQuality = Literal["low", "medium", "high"]
+
+
+async def generate_designed_image(
+    prompt: str,
+    brand_id: str,
+    *,
+    aspect: AspectRatio = "1:1",
+    quality: DesignQuality = "medium",
+    model: str = "openai/gpt-image-2",
+) -> pathlib.Path:
+    """Generate a fully designed image (text-inside-image) via gpt-image-2.
+
+    Unlike generate_image() which produces bare backgrounds for Pillow
+    overlay, this function returns an image with the text already rendered
+    in the composition. Use it for quote cards, carousel slides, and any
+    single-image post where the typography IS the design.
+
+    Quality tiers roughly (fal.ai):
+        low    — $0.01/image — ok for drafts
+        medium — $0.04/image — default, ships fine
+        high   — $0.17/image — hero posts that need to land on first scroll
+
+    Raises ImageGenError on failure. dry_run returns a placeholder path.
+    """
+    s = settings()
+    if s.is_dry_run:
+        log.info(
+            "image_gen.designed.dry_run",
+            brand_id=brand_id, prompt=prompt[:80], quality=quality,
+        )
+        return pathlib.Path(f"/tmp/dry-run-designed-{uuid.uuid4().hex[:8]}.png")
+
+    if not s.fal_api_key:
+        raise ImageGenError("FAL_API_KEY is not set")
+
+    out_dir = pathlib.Path(s.video_storage_path) / "images" / brand_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{uuid.uuid4().hex}.png"
+
+    image_url = await _generate_via_gpt_image_2(
+        prompt=prompt, aspect=aspect, quality=quality, model=model,
+    )
+    await _download(image_url, out_path)
+
+    log.info(
+        "image_gen.designed.done",
+        brand_id=brand_id, model=model, quality=quality,
+        path=str(out_path), size_kb=out_path.stat().st_size // 1024,
+    )
+    return out_path
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError, ImageGenError)),
+)
+async def _generate_via_gpt_image_2(
+    *, prompt: str, aspect: AspectRatio, quality: DesignQuality, model: str,
+) -> str:
+    """fal.ai call for gpt-image-2. gpt-image-2 takes longer than FLUX
+    (thinking phase), so we use a generous timeout inside fal_client.run."""
+    import os
+
+    import fal_client
+
+    if settings().fal_api_key and not os.environ.get("FAL_KEY"):
+        os.environ["FAL_KEY"] = settings().fal_api_key
+
+    image_size = _GPT_IMAGE_2_ASPECT.get(aspect, "square_hd")
+
+    def _run() -> dict:
+        return fal_client.run(
+            model,
+            arguments={
+                "prompt": prompt,
+                "image_size": image_size,
+                "quality": quality,
+                "num_images": 1,
+            },
+        )
+
+    result = await asyncio.to_thread(_run)
+    images = result.get("images") or []
+    if not images:
+        raise ImageGenError(f"gpt-image-2 returned no images for prompt={prompt[:80]!r}")
+    url = images[0].get("url") if isinstance(images[0], dict) else None
+    if not url:
+        raise ImageGenError(f"gpt-image-2 image had no URL: {images[0]!r}")
+    return url
