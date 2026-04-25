@@ -278,7 +278,7 @@ async def _write_result(
     try:
         await update_row_by_key(
             sheet_id=s.glitch_posts_sheet_id,
-            worksheet=s.glitch_posts_worksheet,
+            worksheet=row.worksheet or s.glitch_posts_worksheet,
             columns=SHEET_COLUMNS,
             key_column="id",
             key_value=row.id,

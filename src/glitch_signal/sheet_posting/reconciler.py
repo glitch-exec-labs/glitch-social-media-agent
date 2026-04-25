@@ -64,7 +64,7 @@ async def reconcile_pending() -> dict:
         try:
             await update_row_by_key(
                 sheet_id=s.glitch_posts_sheet_id,
-                worksheet=s.glitch_posts_worksheet,
+                worksheet=r.worksheet or s.glitch_posts_worksheet,
                 columns=SHEET_COLUMNS,
                 key_column="id",
                 key_value=r.id,

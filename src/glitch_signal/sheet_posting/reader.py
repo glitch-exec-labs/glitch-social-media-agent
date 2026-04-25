@@ -69,9 +69,13 @@ class QueuedPost:
     post_url: str
     platform_post_id: str
     notes: str
+    # Worksheet tab this row was read from. Used by poster + reconciler so
+    # status updates land in the right tab. Defaults to "queue" for legacy
+    # single-tab callers.
+    worksheet: str = "queue"
 
     @classmethod
-    def from_row(cls, row: dict[str, str]) -> QueuedPost:
+    def from_row(cls, row: dict[str, str], *, worksheet: str = "queue") -> QueuedPost:
         # content_type defaults: "carousel" for LinkedIn (legacy behaviour
         # before the column existed), "text" for everything else.
         platform = row.get("platform", "").strip()
@@ -89,6 +93,7 @@ class QueuedPost:
             post_url=row.get("post_url", "").strip(),
             platform_post_id=row.get("platform_post_id", "").strip(),
             notes=row.get("notes", ""),
+            worksheet=worksheet,
         )
 
 
@@ -107,13 +112,37 @@ def _parse_iso(raw: str) -> datetime | None:
 # Read / selection
 # ---------------------------------------------------------------------------
 
+def _worksheet_list() -> list[str]:
+    """Worksheets to read on every fetch.
+
+    Order matters only for stable IDs across reads; both tabs are scanned.
+    Falls back to the legacy single-tab name when the new tabs aren't set.
+    """
+    s = settings()
+    if s.glitch_posts_brand_worksheet or s.glitch_posts_founder_worksheet:
+        names: list[str] = []
+        if s.glitch_posts_brand_worksheet:
+            names.append(s.glitch_posts_brand_worksheet)
+        if s.glitch_posts_founder_worksheet:
+            names.append(s.glitch_posts_founder_worksheet)
+        return names
+    return [s.glitch_posts_worksheet or "queue"]
+
+
 async def fetch_all_rows() -> list[QueuedPost]:
-    """Read every row of the posts sheet and return typed records."""
+    """Read every row of every configured worksheet."""
     s = settings()
     if not s.glitch_posts_sheet_id:
         return []
-    raw = await asyncio.to_thread(_read_rows_sync, s.glitch_posts_sheet_id, s.glitch_posts_worksheet)
-    return [QueuedPost.from_row(r) for r in raw]
+    out: list[QueuedPost] = []
+    for ws in _worksheet_list():
+        try:
+            raw = await asyncio.to_thread(_read_rows_sync, s.glitch_posts_sheet_id, ws)
+        except Exception:
+            continue
+        for r in raw:
+            out.append(QueuedPost.from_row(r, worksheet=ws))
+    return out
 
 
 async def fetch_next_due(now: datetime | None = None) -> QueuedPost | None:

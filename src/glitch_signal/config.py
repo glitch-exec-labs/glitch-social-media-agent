@@ -56,8 +56,16 @@ class Settings(BaseSettings):
     # --- Sheet-driven posting (scheduled from a Google Sheet) ---
     # When set, the scheduler reads this sheet and fires queued posts at the
     # configured cadence. Columns are managed by sheet_posting.reader.
+    #
+    # The original implementation used one tab named `queue`. As of April
+    # 2026 we split per-brand into separate tabs ("brand" and "founder")
+    # so each account has its own editable view. Legacy single-tab callers
+    # still work — set glitch_posts_worksheet alone and leave the per-brand
+    # ones empty.
     glitch_posts_sheet_id: str = ""
     glitch_posts_worksheet: str = "queue"
+    glitch_posts_brand_worksheet: str = ""
+    glitch_posts_founder_worksheet: str = ""
     # Minimum gap between two posts on the same (brand, platform) pair.
     glitch_posts_min_interval_minutes: int = 240  # 4 hours
     # Max posts per (brand, platform) per UTC calendar day.
