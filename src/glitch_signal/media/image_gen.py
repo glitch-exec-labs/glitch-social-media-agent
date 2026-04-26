@@ -224,13 +224,13 @@ async def _generate_via_gpt_image_2(
     # `portrait_4_3` preset on fal returns 768x1024, which downscales blurry
     # text on LinkedIn's 1080+ render. Asking for full-HD portrait gives the
     # model more pixels to render type into.
-    _PX: dict[str, dict[str, int]] = {
+    px_map: dict[str, dict[str, int]] = {
         "1:1":  {"width": 1024, "height": 1024},
         "4:5":  {"width": 1080, "height": 1350},   # LinkedIn carousel native
         "4:3":  {"width": 1080, "height": 1440},
         "16:9": {"width": 1280, "height": 720},
     }
-    image_size: dict | str = _PX.get(aspect) or _GPT_IMAGE_2_ASPECT.get(aspect, "square_hd")
+    image_size: dict | str = px_map.get(aspect) or _GPT_IMAGE_2_ASPECT.get(aspect, "square_hd")
 
     def _run() -> dict:
         return fal_client.run(
