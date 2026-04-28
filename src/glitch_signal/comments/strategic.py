@@ -70,6 +70,24 @@ async def queue_strategic_reply(
     """
     platform, post_id = _classify_url(target_url)
 
+    # Reply-restriction pre-check (X only). If the author has limited
+    # who can reply, we'd rather know now and skip the LLM draft entirely
+    # than burn tokens on a reply that can't physically post. There's no
+    # equivalent control on LinkedIn, so we only probe X.
+    if platform == "x" and post_id:
+        try:
+            from glitch_signal.integrations.x import XClient
+            blocked = await XClient(brand_id).get_reply_settings(post_id)
+        except Exception:
+            blocked = ""
+        if blocked and blocked != "everyone":
+            return None, (
+                f"Author has restricted replies (reply_settings={blocked!r}). "
+                "X won't accept a threaded reply from us. Skipping draft. "
+                "If you want to engage anyway, post your own tweet that "
+                "links to theirs."
+            )
+
     # Fetch target post text (best-effort)
     try:
         target_text, author_handle = await _fetch_target_post(target_url, platform)
@@ -421,6 +439,23 @@ async def approve_strategic(sr_id: str) -> tuple[bool, str]:
     try:
         from glitch_signal.integrations.x import XClient
         x = XClient(row.brand_id)
+        # Re-check reply settings at approval time in case the author
+        # tightened them after we drafted. Cheap, single GET.
+        if row.target_post_id:
+            settings_now = await x.get_reply_settings(row.target_post_id)
+            if settings_now and settings_now != "everyone":
+                async with _session_factory()() as session:
+                    blocked_row = await session.get(StrategicReply, sr_id)
+                    if blocked_row:
+                        blocked_row.status = "blocked_by_author"
+                        blocked_row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                        session.add(blocked_row)
+                        await session.commit()
+                return False, (
+                    f"Author restricted replies (reply_settings={settings_now!r}). "
+                    "Not falling back to a quote-tweet — that's a different "
+                    "surface and you didn't ask for one."
+                )
         result = await x.post_tweet(
             row.drafted_reply,
             in_reply_to_tweet_id=row.target_post_id,
@@ -428,6 +463,27 @@ async def approve_strategic(sr_id: str) -> tuple[bool, str]:
         posted_id = result.tweet_id
         via = "native-reply"
     except Exception as native_exc:
+        # If the error is specifically X's reply-restriction signal, treat
+        # it as blocked_by_author and refuse the quote-tweet fallback —
+        # the operator asked for a reply, not a quote-tweet on our feed.
+        err_text = str(native_exc).lower()
+        is_reply_blocked = (
+            "reply to this conversation is not allowed" in err_text
+            or "not been mentioned or otherwise engaged" in err_text
+        )
+        if is_reply_blocked:
+            async with _session_factory()() as session:
+                blocked_row = await session.get(StrategicReply, sr_id)
+                if blocked_row:
+                    blocked_row.status = "blocked_by_author"
+                    blocked_row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                    session.add(blocked_row)
+                    await session.commit()
+            return False, (
+                "Author restricted replies on this tweet. Not falling back "
+                "to a quote-tweet — that's a different surface."
+            )
+
         log.info(
             "strategic.x_native_unavailable_falling_back_to_upload_post",
             sr_id=sr_id, error=str(native_exc)[:200],

@@ -245,6 +245,31 @@ class XClient:
         resp = await self._request("GET", "/2/users/me")
         return resp.json().get("data") or {}
 
+    async def get_reply_settings(self, tweet_id: str) -> str:
+        """Return the author's reply_settings on a target tweet.
+
+        Possible values per X docs:
+          "everyone"        — anyone can reply
+          "mentionedUsers"  — only users mentioned in the tweet can reply
+          "following"       — only users the author follows can reply
+          "subscribers"     — only paying subscribers can reply
+          "verified"        — only verified accounts can reply
+
+        Returns an empty string on lookup failure; caller should treat
+        that as "unknown — proceed and let the post call fail" rather
+        than blocking optimistically.
+        """
+        try:
+            resp = await self._request(
+                "GET", f"/2/tweets/{tweet_id}",
+                params={"tweet.fields": "reply_settings"},
+            )
+        except Exception as exc:
+            log.info("x.reply_settings_lookup_failed", tweet_id=tweet_id, error=str(exc)[:200])
+            return ""
+        data = resp.json().get("data") or {}
+        return str(data.get("reply_settings") or "").strip()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
