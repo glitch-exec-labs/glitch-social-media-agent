@@ -5,15 +5,22 @@ Reuses the existing CommentReply table by setting platform="upload_post_x"
 so the same approve_reply / veto_reply / Discord embed code works for X
 mentions exactly like it works for IG comments.
 
-Cadence: scheduler tick should call sweep_all() every ~15 min. Cursor
-state (the last seen mention id per account) is stored implicitly in
-the CommentReply rows themselves — we read the highest platform_comment_id
-we've already ingested per (brand_id, platform) and pass it as since_id
-on the next /mentions call.
+Cadence: scheduler tick should call sweep_and_draft() every ~15 min. Two
+sub-passes:
+
+  1. ingest — sweep_all(): pull new mentions, write rows in status=new
+     with the highest-stored mention id as since_id cursor.
+  2. draft  — draft_pending(): for each status=new row, draft a reply
+     in brand voice via the same LLM/forbidden-terms pipeline IG uses,
+     flip to status=pending_approval, and post the Discord embed via
+     comments.sweeper._send_approval_message.
+
+Cursor state lives implicitly in the CommentReply rows themselves —
+we read the highest platform_comment_id we've already ingested per
+(brand_id, platform) and pass it as since_id on the next /mentions call.
 
 What gets queued:
-  - Replies *to* one of our tweets (mention.referenced_tweet_id is set
-    and points at one of our PublishedPost rows)
+  - Replies *to* one of our tweets (mention.referenced_tweet_id set)
   - Pure mentions (someone tagged us in a fresh tweet)
 
 What gets skipped:
@@ -163,3 +170,113 @@ def _parse_iso(s: str | None) -> datetime | None:
         return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Drafter pass — turn status=new into status=pending_approval
+# ---------------------------------------------------------------------------
+
+async def draft_pending(*, max_per_run: int = 20) -> dict:
+    """Draft replies for any X CommentReply row currently in status=new,
+    flip to pending_approval, post the Discord embed.
+
+    Caps per run to avoid blowing the LLM budget on a backlog. Older
+    rows are processed first (oldest-first) so the queue drains FIFO.
+    """
+    # Local imports — avoid circular: comments.sweeper imports nothing
+    # from x_sweeper, but we need its drafter + Discord poster.
+    from glitch_signal.comments.sweeper import (
+        _draft_reply,
+        _send_approval_message,
+    )
+    from glitch_signal.db.models import PublishedPost
+
+    factory = _session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(CommentReply)
+            .where(
+                CommentReply.platform == "upload_post_x",
+                CommentReply.status == "new",
+            )
+            .order_by(CommentReply.created_at.asc())
+            .limit(max_per_run)
+        )
+        rows = list(result.scalars().all())
+
+    summary = {"considered": len(rows), "drafted": 0, "failed": 0, "skipped": 0}
+    for row in rows:
+        # Try to look up the parent tweet text — if the mention is a
+        # reply to one of our own posts we can give the LLM the context.
+        original_post = ""
+        if row.platform_post_id and row.platform_post_id != row.platform_comment_id:
+            async with factory() as session:
+                pp_q = await session.execute(
+                    select(PublishedPost).where(
+                        PublishedPost.platform_post_id == row.platform_post_id,
+                    ).limit(1)
+                )
+                pp = pp_q.scalar_one_or_none()
+                if pp:
+                    # We don't store post body on PublishedPost, but the
+                    # platform-side context isn't strictly needed; the
+                    # commenter's text is the primary input. Leave empty.
+                    original_post = ""
+
+        try:
+            drafted = await _draft_reply(
+                brand_id=row.brand_id,
+                platform=row.platform,
+                original_post=original_post,
+                comment_text=row.comment_text,
+            )
+        except Exception as exc:
+            log.warning("x_sweeper.draft_failed", row_id=row.id, error=str(exc)[:300])
+            async with factory() as session:
+                stored = await session.get(CommentReply, row.id)
+                if stored:
+                    stored.status = "failed"
+                    stored.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                    session.add(stored)
+                    await session.commit()
+            summary["failed"] += 1
+            continue
+
+        if not drafted or not drafted.strip():
+            summary["skipped"] += 1
+            continue
+
+        async with factory() as session:
+            stored = await session.get(CommentReply, row.id)
+            if not stored:
+                continue
+            stored.drafted_reply = drafted
+            stored.status = "pending_approval"
+            stored.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            session.add(stored)
+            await session.commit()
+            row = stored
+
+        # Post the Discord embed (non-fatal if it fails — the host-bot
+        # plugin's polling loop will pick the row up on its next tick).
+        try:
+            await _send_approval_message(row)
+        except Exception as exc:
+            log.warning(
+                "x_sweeper.discord_post_failed",
+                row_id=row.id, error=str(exc)[:300],
+            )
+        summary["drafted"] += 1
+
+    log.info("x_sweeper.drafted", **summary)
+    return summary
+
+
+async def sweep_and_draft() -> dict:
+    """One full pass: ingest new mentions, then draft replies for any
+    rows still in status=new. Convenience wrapper for the scheduler tick.
+    """
+    ingest = await sweep_all()
+    drafts = await draft_pending()
+    return {**{f"ingest_{k}": v for k, v in ingest.items()},
+            **{f"draft_{k}": v for k, v in drafts.items()}}
