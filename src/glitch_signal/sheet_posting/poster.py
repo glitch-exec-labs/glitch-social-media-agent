@@ -57,20 +57,13 @@ async def post_one(row: QueuedPost) -> tuple[bool, str]:
     target_linkedin_page_id = block.get("target_linkedin_page_id") if target == "linkedin" else None
     content_type = row.content_type or ("carousel" if target == "linkedin" else "text")
 
-    # Native LinkedIn path — replaces Upload-Post for upload_post_linkedin
-    # rows when LINKEDIN_ACCESS_TOKEN is configured. Returns the real
-    # urn:li:share:... synchronously, so we skip the request:<id> reconcile
-    # for LinkedIn entirely. Falls through to Upload-Post on any error so
-    # one bad token doesn't stall the whole pipeline.
-    if target == "linkedin" and settings().linkedin_access_token:
-        try:
-            return await _post_via_linkedin_native(row=row, body=text, content_type=content_type)
-        except Exception as exc:
-            log.warning(
-                "sheet_posting.linkedin_native_failed_falling_back",
-                row_id=row.id, error=str(exc)[:300],
-            )
-
+    # Routing policy (April 2026):
+    #   Primary publish path = Upload-Post (we have an active monthly
+    #   subscription, no per-post marginal cost there).
+    #   Fallback for LinkedIn = native Marketing-API path, used only when
+    #   Upload-Post itself errors (vendor outage, account lockout, etc.).
+    #   Native LinkedIn is otherwise reserved for capabilities Upload-Post
+    #   simply doesn't expose — comment read/reply on company-page posts.
     try:
         if content_type == "quote_card":
             # Single designed image (gpt-image-2) + original body as caption
@@ -104,6 +97,20 @@ async def post_one(row: QueuedPost) -> tuple[bool, str]:
             )
     except Exception as exc:
         log.warning("sheet_posting.upload_failed", row_id=row.id, error=str(exc)[:200])
+        # Fallback to native LinkedIn API when (a) the row is for LinkedIn
+        # and (b) we have a configured token. Lets a vendor outage on
+        # Upload-Post not stall LinkedIn publishing.
+        if target == "linkedin" and settings().linkedin_access_token:
+            try:
+                log.info("sheet_posting.linkedin_native_fallback_attempt", row_id=row.id)
+                return await _post_via_linkedin_native(
+                    row=row, body=text, content_type=content_type,
+                )
+            except Exception as native_exc:
+                log.warning(
+                    "sheet_posting.linkedin_native_fallback_failed",
+                    row_id=row.id, error=str(native_exc)[:300],
+                )
         return await _mark_failed(row, f"upload failed: {exc}")
 
     # Normalize the response — same handling as the foundation/launch scripts
