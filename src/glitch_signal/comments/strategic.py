@@ -219,6 +219,12 @@ def _classify_url(url: str) -> tuple[str, str | None]:
             m2 = re.search(r"-activity-(\d+)-", url)
             if m2:
                 return "linkedin", f"urn:li:activity:{m2.group(1)}"
+            # /posts/<slug>-share-NNN-... — newer URL form using share id.
+            # The numeric id resolves the same activity, so we synthesize
+            # an activity URN; LinkedIn's socialActions endpoint accepts it.
+            m3 = re.search(r"-share-(\d+)-", url)
+            if m3:
+                return "linkedin", f"urn:li:activity:{m3.group(1)}"
             return "linkedin", None
 
     return "unknown", None
@@ -285,7 +291,27 @@ async def _fetch_linkedin_post(url: str) -> tuple[str, str | None]:
     title = _og("title")
     description = _og("description")
     combined = (title + "\n\n" + description).strip()
-    return combined, None
+
+    # OpenGraph meta tags double-encode HTML entities (&amp;#39; etc.) —
+    # decode twice so the LLM sees clean text instead of "Don&amp;#39;t post".
+    import html as _html
+    combined = _html.unescape(_html.unescape(combined))
+
+    # Try to pull the LinkedIn author from <meta property="og:author"> or
+    # the author URL pattern in the page itself.
+    author_handle = None
+    m_author = re.search(
+        r'<meta[^>]+(?:property|name)=["\']author["\'][^>]+content=["\']([^"\']+)["\']',
+        html, re.IGNORECASE,
+    )
+    if m_author:
+        author_handle = m_author.group(1).strip() or None
+    if not author_handle:
+        m_url = re.search(r'linkedin\.com/in/([A-Za-z0-9._-]+)', html)
+        if m_url:
+            author_handle = m_url.group(1)
+
+    return combined, author_handle
 
 
 # ---------------------------------------------------------------------------
@@ -293,17 +319,25 @@ async def _fetch_linkedin_post(url: str) -> tuple[str, str | None]:
 # ---------------------------------------------------------------------------
 
 _STRATEGIC_SYSTEM = """You are writing a short reply to someone else's post on a professional social platform.
-The goal is to add real value to the conversation — agreement with extension,
-respectful disagreement with a counter-point, a concrete experience, a specific
-technical detail the original post missed, or a sharp follow-up question about
-a specific point they made.
 
-Hard rules — a reply that breaks any of these will be rejected:
-- 1-3 sentences max. Never longer.
-- Match the brand voice file verbatim.
-- No marketing verbs, no hype adjectives, no "great post / totally agree"
-  openers, no "thanks for sharing".
-- No engagement-bait questions. Any question must be about a specific point
+Your reply must do EXACTLY ONE of these:
+  (a) Add a SPECIFIC concrete experience the commenter has lived — name a
+      tool, a number, a decision, a moment. Generic agreement is rejected.
+  (b) Push back on a SPECIFIC point the original post made, briefly.
+  (c) Add ONE specific piece of information the post missed (a technique,
+      a tradeoff, a counter-example).
+
+The reply is REJECTED if it does any of:
+  - Generic agreement: "great point", "love this", "totally agree", "fascinating".
+  - Generic philosophical framing: "it's about blending X with Y",
+    "creates content that resonates", "the journey of", "harnessing the power".
+  - AI-consultant cadence: "It's fascinating how X can guide Y", "Blending
+    A with B creates C that resonates beyond Z".
+  - Marketing verbs: "leverages", "harnesses", "elevates", "transforms".
+  - "In my experience," followed by something vague.
+  - Any question. Statements only.
+  - 1-3 sentences max. Never longer.
+  - "Great post / totally agree" / "thanks for sharing" openers.
   in the original post.
 - No self-promotion. Never link to our own work unless the original post
   explicitly asked for examples.
@@ -370,6 +404,44 @@ async def _draft_strategic_reply(
     )
     body = (resp.choices[0].message.content or "").strip()
     body = _strip_quotes_and_framing(body)
+    body = _scrub_em_dashes(body)
+
+    # Anti-AI-tells regen — same filter the comment-reply drafter uses.
+    # Catches "Curious if you've...", em-dashes, "the real lesson", etc.
+    from glitch_signal.agent.nodes.text_writer import _x_specific_hits
+    hits = _forbidden_hits(body)
+    if platform in ("upload_post_x", "x", "linkedin"):
+        hits = hits + _x_specific_hits(body)
+    # Strategic replies must NEVER contain a question — extra catch.
+    if "?" in body:
+        hits.append("question (strategic replies make statements only)")
+    if hits:
+        log.info("strategic.forbidden_hits_regen", hits=hits, platform=platform)
+        ban = (
+            "Your last reply tripped these anti-AI / anti-bait rules: "
+            + ", ".join(f'"{h}"' for h in hits)
+            + ". Rewrite as a STATEMENT (no questions, no '?'), "
+            "without any of the listed phrases. Same idea, different wording. "
+            "Read it out loud — if it sounds like a human's casual reply, "
+            "ship it. If it sounds like a polished essay or has a question, "
+            "you're not done."
+        )
+        resp = await litellm.acompletion(
+            model=mc.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+                {"role": "assistant", "content": body},
+                {"role": "user", "content": ban},
+            ],
+            max_tokens=1024,
+            **mc.kwargs,
+        )
+        body = _scrub_em_dashes(
+            _strip_quotes_and_framing(
+                (resp.choices[0].message.content or "").strip()
+            )
+        )
 
     hits = _forbidden_hits(body)
     if hits:
@@ -391,8 +463,10 @@ async def _draft_strategic_reply(
             max_tokens=1024,
             **mc.kwargs,
         )
-        body = _strip_quotes_and_framing(
-            (resp.choices[0].message.content or "").strip()
+        body = _scrub_em_dashes(
+            _strip_quotes_and_framing(
+                (resp.choices[0].message.content or "").strip()
+            )
         )
 
     return body
@@ -409,6 +483,21 @@ def _strip_quotes_and_framing(text: str) -> str:
     out = "\n".join(lines).strip()
     if out.startswith('"') and out.endswith('"'):
         out = out[1:-1].strip()
+    return out
+
+
+def _scrub_em_dashes(text: str) -> str:
+    """Replace em-dash (—) with comma + space. Em-dashes mid-sentence are
+    the single highest-signal AI tell on social. We replace deterministically
+    rather than trusting an LLM regen to drop it (it often doesn't)."""
+    # Three patterns:
+    #   "X — Y"  -> "X, Y"   (spaces on both sides)
+    #   "X—Y"    -> "X, Y"   (no spaces)
+    #   "X —Y"   -> "X, Y"   (mixed)
+    out = text.replace(" — ", ", ")
+    out = out.replace(" —", ",")
+    out = out.replace("— ", " ")
+    out = out.replace("—", ", ")
     return out
 
 

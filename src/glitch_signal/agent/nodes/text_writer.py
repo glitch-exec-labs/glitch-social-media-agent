@@ -113,6 +113,40 @@ _FORBIDDEN_WORDS: tuple[str, ...] = (
     "let it iterate",
     "stick with what works",
     "rinse and repeat",
+    # AI-consultant tells (added 2026-04-29 after a strategic-reply
+    # draft slid through with phrases no human posts on social).
+    "fascinating",
+    "resonates",
+    "resonate",
+    "synergy",
+    "synergize",
+    "blending",
+    "blends",
+    "blend",
+    "structural strengths",
+    "personal storytelling",
+    "human touch",
+    "authentic voice",
+    "more authentic",
+    "creates content that",
+    "in my experience" + ",",  # comma form is the AI tell; the bare phrase is fine
+    "it is fascinating",
+    "it's fascinating",
+    "absolutely",
+    "delve",
+    "delves",
+    "delving",
+    "navigate the",
+    "navigating the",
+    "the journey of",
+    "embark",
+    "embarking",
+    "elevate",
+    "elevates",
+    "transformative",
+    "leverages",  # specific to AI essays — humans say "uses"
+    "harnessing",
+    "ushers in",
 )
 
 # Engagement-bait question patterns. These sneak in on short-form X posts.
