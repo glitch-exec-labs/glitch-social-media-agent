@@ -185,7 +185,17 @@ _LI_HOSTS = ("linkedin.com", "www.linkedin.com", "lnkd.in")
 
 
 def _classify_url(url: str) -> tuple[str, str | None]:
-    """Return (platform, post_id). Platform is x|linkedin|unknown."""
+    """Return (platform, post_id). Platform is x|linkedin|unknown.
+
+    For LinkedIn we extract the URN if the URL carries one (which the
+    /feed/update/ form does). Examples:
+      https://www.linkedin.com/feed/update/urn:li:activity:7445...   -> activity:7445...
+      https://www.linkedin.com/feed/update/urn%3Ali%3Aactivity%3A7445   -> activity:7445...
+      https://www.linkedin.com/posts/...activity-7445...-abcd          -> activity:7445...
+
+    Returns the full urn string (e.g. "urn:li:activity:7445...") so the
+    caller can hand it directly to LinkedIn API methods.
+    """
     url = url.strip().rstrip("/")
     low = url.lower()
 
@@ -197,6 +207,18 @@ def _classify_url(url: str) -> tuple[str, str | None]:
 
     for host in _LI_HOSTS:
         if f"//{host}/" in low:
+            # /feed/update/urn:li:activity:NNN  (or url-encoded variant)
+            decoded = url.replace("%3A", ":").replace("%3a", ":")
+            m = re.search(
+                r"urn:li:(?:activity|share|ugcPost|comment):[A-Za-z0-9._-]+",
+                decoded,
+            )
+            if m:
+                return "linkedin", m.group(0)
+            # /posts/<slug>-activity-NNN-... — synthesize the URN.
+            m2 = re.search(r"-activity-(\d+)-", url)
+            if m2:
+                return "linkedin", f"urn:li:activity:{m2.group(1)}"
             return "linkedin", None
 
     return "unknown", None
@@ -411,20 +433,52 @@ async def approve_strategic(sr_id: str) -> tuple[bool, str]:
 
     api_key = settings().upload_post_api_key
 
-    # LinkedIn: we can't programmatically comment on other people's posts.
-    # Flip status to 'copied' and let the operator paste manually.
-    if row.target_platform != "x":
+    # LinkedIn: post the comment natively via /rest/socialActions. The
+    # actor URN switches by brand_id — founder posts as Tejas via
+    # w_member_social, company posts as Glitch Executor via
+    # w_organization_social. Both scopes are granted on our app.
+    if row.target_platform == "linkedin":
+        if not row.target_post_id:
+            return False, (
+                "LinkedIn URL didn't carry a parseable URN. Paste the "
+                "/feed/update/urn:li:activity:... form of the URL."
+            )
+        try:
+            from glitch_signal.integrations.linkedin import (
+                LinkedInError,
+                author_urn_for,
+                client_from_settings,
+            )
+            client = client_from_settings()
+            if client is None:
+                return False, "LINKEDIN_ACCESS_TOKEN unset"
+            actor_urn = author_urn_for(row.brand_id)
+            if not actor_urn:
+                return False, f"no LinkedIn actor URN configured for {row.brand_id}"
+            comment_urn = await client.create_comment(
+                post_urn=row.target_post_id,
+                actor_urn=actor_urn,
+                text=row.drafted_reply,
+            )
+        except LinkedInError as exc:
+            async with _session_factory()() as session:
+                fail = await session.get(StrategicReply, sr_id)
+                if fail:
+                    fail.status = "failed"
+                    fail.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                    session.add(fail)
+                    await session.commit()
+            return False, f"LinkedIn comment post failed: {exc}"
+
         async with _session_factory()() as session:
-            row = await session.get(StrategicReply, sr_id)
-            if row:
-                row.status = "copied"
-                row.updated_at = datetime.now(UTC).replace(tzinfo=None)
-                session.add(row)
+            ok_row = await session.get(StrategicReply, sr_id)
+            if ok_row:
+                ok_row.status = "posted"
+                ok_row.posted_platform_post_id = comment_urn
+                ok_row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                session.add(ok_row)
                 await session.commit()
-        return True, (
-            f"LinkedIn API doesn't support third-party comments on arbitrary "
-            f"posts. Paste this into the comment box:\n\n{row.drafted_reply}"
-        )
+        return True, f"Comment posted on LinkedIn as {row.brand_id}: {comment_urn}"
 
     # X path: prefer the native /2/tweets endpoint (true threaded reply
     # via in_reply_to_tweet_id), fall back to Upload-Post quote_tweet_id

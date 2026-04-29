@@ -330,6 +330,63 @@ class LinkedInClient:
             post_url=f"https://www.linkedin.com/feed/update/{post_urn}/",
         )
 
+    # -- Comments / engagement on someone else's post ----------------------
+
+    async def get_post(self, post_urn: str) -> dict:
+        """GET /rest/posts/{encoded-urn}. Returns the full post JSON.
+
+        Used to fetch a target post's commentary before drafting a reply
+        comment on it. URN must be url-encoded by us — LinkedIn rejects
+        otherwise (same reason wait_for_document had to encode).
+        """
+        from urllib.parse import quote
+        encoded = quote(post_urn, safe="")
+        resp = await self._request("GET", f"/rest/posts/{encoded}")
+        return resp.json() or {}
+
+    async def create_comment(
+        self,
+        *,
+        post_urn: str,
+        actor_urn: str,
+        text: str,
+        parent_comment_urn: str | None = None,
+    ) -> str:
+        """Post a comment on someone else's (or our own) LinkedIn post.
+
+        actor_urn = whose name the comment is posted under:
+          - urn:li:person:<id>          for founder profile     (w_member_social)
+          - urn:li:organization:<id>    for company-page voice  (w_organization_social)
+
+        Returns the new comment's URN (urn:li:comment:(<post>,<id>)).
+        Raises LinkedInError on failure.
+        """
+        from urllib.parse import quote
+        encoded = quote(post_urn, safe="")
+        body: dict = {
+            "actor": actor_urn,
+            "object": post_urn,
+            "message": {"text": text},
+        }
+        if parent_comment_urn:
+            body["parentComment"] = parent_comment_urn
+        resp = await self._request(
+            "POST", f"/rest/socialActions/{encoded}/comments", json=body,
+        )
+        # The response either echoes the created comment as JSON or just
+        # returns the new URN in a header — handle both.
+        data = resp.json() if resp.content else {}
+        comment_urn = (
+            (data.get("id") if isinstance(data, dict) else None)
+            or resp.headers.get("x-restli-id")
+            or resp.headers.get("X-RestLi-Id")
+        )
+        if not comment_urn:
+            raise LinkedInError(
+                f"create_comment: no urn in response. body[:300]: {resp.text[:300]}"
+            )
+        return str(comment_urn)
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
