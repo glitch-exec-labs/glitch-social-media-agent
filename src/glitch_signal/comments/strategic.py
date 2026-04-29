@@ -327,6 +327,19 @@ Your reply must do EXACTLY ONE of these:
   (c) Add ONE specific piece of information the post missed (a technique,
       a tradeoff, a counter-example).
 
+When pulling from the identity file:
+  - Pick ONE entry from the "What I'm shipping" section. Don't blend
+    language from two different entries — that's what AI does, not what
+    a human posting a reply does. If the cold-email story is the most
+    relevant, write only about cold emails. Don't sprinkle in "reading
+    the logs" from the voice-agent story.
+  - Use language CLOSE to the wording in the identity file. Don't
+    paraphrase a specific number into a vaguer one, and don't invent
+    new specifics that aren't there.
+  - If no identity entry is genuinely relevant to the original post,
+    write a short statement of agreement or disagreement WITHOUT
+    inventing a specific. Better to be terse than to fabricate.
+
 The reply is REJECTED if it does any of:
   - Generic agreement: "great point", "love this", "totally agree", "fascinating".
   - Generic philosophical framing: "it's about blending X with Y",
@@ -343,6 +356,9 @@ The reply is REJECTED if it does any of:
     quantify ("tripled", "2x", "50% better") unless the identity file
     contains that exact number. Hallucinating numbers gets the reply
     REJECTED — it's worse than generic agreement.
+  - EXCLAMATION CLOSERS. "It's amazing what X can do!", "Such a
+    powerful idea!", "Game-changer!" — every one of these is an AI
+    tell. Strategic replies end on a beat, not a flourish. No "!".
   in the original post.
 - No self-promotion. Never link to our own work unless the original post
   explicitly asked for examples.
@@ -438,6 +454,10 @@ async def _draft_strategic_reply(
     # Strategic replies must NEVER contain a question — extra catch.
     if "?" in body:
         hits.append("question (strategic replies make statements only)")
+    # Exclamation marks read as AI on professional social. Tolerate at
+    # most one if it's not the final character; reject at the end.
+    if body.rstrip().endswith("!"):
+        hits.append("exclamation closer (AI flourish)")
     if hits:
         log.info("strategic.forbidden_hits_regen", hits=hits, platform=platform)
         ban = (

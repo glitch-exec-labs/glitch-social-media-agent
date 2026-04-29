@@ -147,6 +147,22 @@ _FORBIDDEN_WORDS: tuple[str, ...] = (
     "leverages",  # specific to AI essays — humans say "uses"
     "harnessing",
     "ushers in",
+    # Discovered in failed strategic-reply drafts (Apr 29).
+    "amazing",
+    "amazingly",
+    "eye-opening",
+    "noticeably",
+    "noteworthy",
+    "key takeaway",
+    "key learning",
+    "boundless",
+    "unlocking",
+    "uncover",
+    "uncovers",
+    "uncovering",
+    "exemplifies",
+    "epitomizes",
+    "remarkable",
 )
 
 # Engagement-bait question patterns. These sneak in on short-form X posts.
