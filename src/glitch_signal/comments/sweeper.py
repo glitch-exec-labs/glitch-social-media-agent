@@ -402,16 +402,34 @@ async def _draft_reply(
         if p.exists():
             voice_text = p.read_text()
 
+    # Identity file — concrete specifics the LLM should pull from. Without
+    # this, replies fall back to generic AI-consultant agreement.
+    identity_path = cfg.get("identity_prompt_path")
+    identity_text = ""
+    if identity_path:
+        p = pathlib.Path(identity_path)
+        if p.exists():
+            identity_text = p.read_text()
+
     voice_role = (
         "VOICE IS TEJAS — first-person 'I', personal, lesson/feeling tone."
         if brand_id == "glitch_founder"
         else "VOICE IS GLITCH EXECUTOR — first-person plural 'we', technical, direct."
     )
 
+    identity_block = (
+        f"---\n"
+        f"WHO YOU ARE — pull specifics from here when drafting. NEVER\n"
+        f"invent specifics that aren't in this file.\n\n"
+        f"{identity_text}\n"
+        if identity_text else ""
+    )
+
     system = (
         f"{voice_text}\n\n"
         f"---\n"
         f"{voice_role}\n"
+        f"{identity_block}"
         f"---\n"
         f"{_reply_system_for(platform)}"
     )

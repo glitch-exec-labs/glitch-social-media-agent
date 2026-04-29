@@ -338,6 +338,11 @@ The reply is REJECTED if it does any of:
   - Any question. Statements only.
   - 1-3 sentences max. Never longer.
   - "Great post / totally agree" / "thanks for sharing" openers.
+  - INVENTED METRICS. If the identity file uses vague language ("jumped",
+    "better", "more replies", "a lot faster"), KEEP IT VAGUE. Don't
+    quantify ("tripled", "2x", "50% better") unless the identity file
+    contains that exact number. Hallucinating numbers gets the reply
+    REJECTED — it's worse than generic agreement.
   in the original post.
 - No self-promotion. Never link to our own work unless the original post
   explicitly asked for examples.
@@ -370,6 +375,15 @@ async def _draft_strategic_reply(
         if p.exists():
             voice_text = p.read_text()
 
+    # Identity file — concrete specifics the LLM can pull from instead of
+    # inventing generic agreement. Only present for brands that maintain one.
+    identity_path = cfg.get("identity_prompt_path")
+    identity_text = ""
+    if identity_path:
+        p = pathlib.Path(identity_path)
+        if p.exists():
+            identity_text = p.read_text()
+
     voice_role = (
         "VOICE IS TEJAS — first-person 'I', personal, lesson/feeling tone."
         if brand_id == "glitch_founder"
@@ -378,10 +392,19 @@ async def _draft_strategic_reply(
 
     author_line = f"Posted by: @{author_handle}\n" if author_handle else ""
 
+    identity_block = (
+        f"---\n"
+        f"WHO YOU ARE — pull specifics from here when drafting. NEVER\n"
+        f"invent specifics that aren't in this file.\n\n"
+        f"{identity_text}\n"
+        if identity_text else ""
+    )
+
     system = (
         f"{voice_text}\n\n"
         f"---\n"
         f"{voice_role}\n"
+        f"{identity_block}"
         f"---\n"
         f"{_STRATEGIC_SYSTEM}"
     )
