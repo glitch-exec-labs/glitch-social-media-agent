@@ -91,6 +91,28 @@ _FORBIDDEN_WORDS: tuple[str, ...] = (
     "in our quest",
     "our journey",
     "on our journey",
+    # AI-tell phrases (added 2026-04-29). Things LLMs reach for that
+    # human writers basically never type. Each one tanks the human-feel
+    # of a post on its own.
+    "the real lesson",
+    "the real insight",
+    "here's the thing",
+    "here's the kicker",
+    "what i've learned is",
+    "what i've come to realize",
+    "deciphering signal",
+    "signal from chaos",
+    "signal in the noise",
+    "north star",
+    "shiny model", "shiny object",
+    "double down", "doubling down",
+    "lean in",
+    "ship relentlessly",
+    "the grind",
+    "saving grace",
+    "let it iterate",
+    "stick with what works",
+    "rinse and repeat",
 )
 
 # Engagement-bait question patterns. These sneak in on short-form X posts.
@@ -122,6 +144,28 @@ def _forbidden_hits(body: str) -> list[str]:
     for pattern in _ENGAGEMENT_BAIT_PATTERNS:
         if pattern in lowered:
             hits.append(pattern)
+    return hits
+
+
+def _x_specific_hits(body: str) -> list[str]:
+    """Extra checks that apply only on short-form X content.
+
+    Em-dashes and "not X, but Y" parallels are legitimate in long-form
+    LinkedIn carousels but read as AI tells in a 1-2 sentence X reply.
+    Run alongside _forbidden_hits for the X reply path.
+    """
+    import re
+    hits: list[str] = []
+    # Em-dash (U+2014) used as a mid-sentence pause. The actual character,
+    # not " - " or " -- ". This is the single highest-signal AI tell on X.
+    if "—" in body:
+        hits.append("em-dash (—) reads as AI on X")
+    # "It's not X, it's Y" parallel structure.
+    if re.search(r"\bit'?s not (just )?\w+[\s,]+it'?s \w+", body, re.IGNORECASE):
+        hits.append("'it's not X, it's Y' parallel")
+    # "X is real. Y is real." — the AI consultant cadence.
+    if re.search(r"\b(\w+) is real\.\s+(\w+) is real\b", body, re.IGNORECASE):
+        hits.append("'X is real. Y is real.' cadence")
     return hits
 
 

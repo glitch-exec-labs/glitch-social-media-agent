@@ -282,7 +282,7 @@ Tiers:
 Return ONLY JSON: {"tier": "<one of the four>", "reason": "<≤12 words>"}
 """
 
-_REPLY_SYSTEM = """You are writing a short reply to a comment on a post by a technical founder.
+_REPLY_SYSTEM_LINKEDIN = """You are writing a short reply to a comment on a LinkedIn post by a technical founder.
 
 Hard rules — a reply that breaks any of these will be rejected:
 - 1-3 sentences max. Never longer. Sharper is better.
@@ -297,6 +297,51 @@ Hard rules — a reply that breaks any of these will be rejected:
 - If the comment is about a technical detail, add real information.
 
 Output ONLY the reply text. No quotes, no preamble, no JSON."""
+
+# X is a different surface — shorter, more casual, lowercase-friendly. The
+# replies that read as human on X are short, specific, and slightly rough.
+# Replies that read as AI on X are full sentences with em-dashes, parallel
+# structure, and a tidy 3-beat resolution. The rules below ban the AI
+# tells aggressively.
+_REPLY_SYSTEM_X = """You are writing a reply on X (Twitter) to a comment or mention.
+
+X-specific rules:
+- 1-2 sentences. Shorter is better. A single fragment is fine.
+- Casual register. Lowercase openings ("yeah,", "agree,", "ha,") are fine
+  if they read natural. Never start with "Thanks" or "Appreciate."
+- No engagement-bait questions ("what's your take?", "thoughts?", etc.).
+- Be concrete. Name the actual tool, the actual number, the actual decision.
+  "The agent burned 50k tokens on tool init" beats "the agent struggled."
+- It's OK to admit you don't know yet ("haven't fully tested," "still
+  figuring out X") — that reads as human, not AI.
+
+ANTI-AI-TELLS — these patterns get rejected as too AI-coded. Hard ban:
+- Em-dashes (—) used as mid-sentence pauses. Use a period, comma, or
+  start a new sentence instead.
+- The "not just X, it's Y" parallel structure. Or "not X. Y." resolution.
+- "Here's the thing", "the real lesson", "the real insight",
+  "what I've learned is".
+- Generic philosophical metaphors: "deciphering signal from chaos",
+  "finding signal in the noise", "north star", "shiny object".
+- Generic founder-speak: "double down", "lean in", "ship relentlessly",
+  "the grind", "build in public" (as a phrase to use; the practice is fine).
+- Hype adjectives: "powerful", "robust", "seamless", "game-changing",
+  "incredible", "amazing", "huge".
+- Three-beat resolution rhythm: setup → complication → tidy lesson.
+  Stop after the second beat.
+
+Where the commenter made a specific point, respond to that specific
+point. If they asked a question, answer it. If they shared an experience,
+share something concrete back — not advice.
+
+Output ONLY the reply text. No quotes, no preamble, no JSON."""
+
+
+def _reply_system_for(platform: str) -> str:
+    """Pick the platform-specific reply prompt."""
+    if platform in ("upload_post_x", "x"):
+        return _REPLY_SYSTEM_X
+    return _REPLY_SYSTEM_LINKEDIN
 
 
 @retry(
@@ -368,7 +413,7 @@ async def _draft_reply(
         f"---\n"
         f"{voice_role}\n"
         f"---\n"
-        f"{_REPLY_SYSTEM}"
+        f"{_reply_system_for(platform)}"
     )
     user = (
         f"The original post (ours):\n{original_post}\n\n"
@@ -389,14 +434,23 @@ async def _draft_reply(
     body = (resp.choices[0].message.content or "").strip()
     body = _strip_framing(body)
 
-    # Re-use the same forbidden-terms filter the post generator uses
+    # Re-use the same forbidden-terms filter the post generator uses,
+    # plus X-specific anti-AI-tells when this is an X reply.
+    from glitch_signal.agent.nodes.text_writer import _x_specific_hits
+
     hits = _forbidden_hits(body)
+    if platform in ("upload_post_x", "x"):
+        hits = hits + _x_specific_hits(body)
+
     if hits:
-        log.info("comments.reply_forbidden_hits_regen", hits=hits)
+        log.info("comments.reply_forbidden_hits_regen", hits=hits, platform=platform)
         ban = (
-            "Your last reply used banned phrases: " + ", ".join(f'"{h}"' for h in hits)
-            + ". Rewrite without any of these, and without any hype adjectives or "
-            "marketing verbs. Same content; just change the wording."
+            "Your last reply tripped these anti-AI rules: "
+            + ", ".join(f'"{h}"' for h in hits)
+            + ". Rewrite without any of them. Same idea, different wording. "
+            "Read it out loud — if it sounds like a human's casual reply, ship it. "
+            "If it sounds like a polished essay, you're not done. "
+            "Lowercase casual is fine. A single fragment is fine."
         )
         resp = await litellm.acompletion(
             model=mc.model,
