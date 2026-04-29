@@ -565,10 +565,12 @@ async def approve_strategic(sr_id: str) -> tuple[bool, str]:
 
     api_key = settings().upload_post_api_key
 
-    # LinkedIn: post the comment natively via /rest/socialActions. The
-    # actor URN switches by brand_id — founder posts as Tejas via
-    # w_member_social, company posts as Glitch Executor via
-    # w_organization_social. Both scopes are granted on our app.
+    # LinkedIn: try to post the comment natively via /rest/socialActions.
+    # On a 403 from the partnerApiSocialActions endpoint specifically, we
+    # downgrade to "copied" so the operator can paste manually — that
+    # endpoint is gated behind the Community Management API partnership,
+    # SEPARATE from the Marketing Developer Platform tier we have today.
+    # Once that approval lands, this same code path just starts working.
     if row.target_platform == "linkedin":
         if not row.target_post_id:
             return False, (
@@ -593,6 +595,25 @@ async def approve_strategic(sr_id: str) -> tuple[bool, str]:
                 text=row.drafted_reply,
             )
         except LinkedInError as exc:
+            err = str(exc)
+            # 403 from socialActions = Community Management API gate, not
+            # a real failure. Downgrade to manual paste.
+            if "partnerApiSocialActions" in err or (
+                "403" in err and "/socialActions/" in err
+            ):
+                async with _session_factory()() as session:
+                    copy_row = await session.get(StrategicReply, sr_id)
+                    if copy_row:
+                        copy_row.status = "copied"
+                        copy_row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                        session.add(copy_row)
+                        await session.commit()
+                return True, (
+                    "LinkedIn Community Management API not approved yet — "
+                    "/rest/socialActions/.../comments is gated separately "
+                    "from MDP. Paste this manually:\n\n"
+                    f"{row.drafted_reply}"
+                )
             async with _session_factory()() as session:
                 fail = await session.get(StrategicReply, sr_id)
                 if fail:
