@@ -330,6 +330,25 @@ class LinkedInClient:
             post_url=f"https://www.linkedin.com/feed/update/{post_urn}/",
         )
 
+    async def delete_post(self, post_urn: str) -> None:
+        """DELETE /rest/posts/{encoded-urn}. Returns 204 on success.
+
+        Same scope as posting (w_member_social / w_organization_social).
+        Idempotent — deleting an already-deleted post returns 204.
+        """
+        from urllib.parse import quote
+        encoded = quote(post_urn, safe="")
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.request(
+                "DELETE",
+                f"{API_HOST}/rest/posts/{encoded}",
+                headers=self._headers(),
+            )
+        if resp.status_code not in (200, 204):
+            raise LinkedInError(
+                f"delete_post {post_urn} -> {resp.status_code}: {resp.text[:300]}"
+            )
+
     # -- Comments / engagement on someone else's post ----------------------
 
     async def get_post(self, post_urn: str) -> dict:

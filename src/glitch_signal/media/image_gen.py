@@ -226,9 +226,10 @@ _OPENAI_SIZE_MAP: dict[str, str] = {
     "16:9": "1536x1024",
 }
 
-# OpenAI's gpt-image-1 defaults to b64_json output. Some accounts/models
+# OpenAI's image models default to b64_json output. Some accounts/models
 # also support `url`; b64 is universally supported, so use that.
-_OPENAI_IMAGE_MODEL = "gpt-image-1"
+# gpt-image-2 is the current public model (as of Apr 2026, replaced 1).
+_OPENAI_IMAGE_MODEL = "gpt-image-2"
 
 
 @retry(

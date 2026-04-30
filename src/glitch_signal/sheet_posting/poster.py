@@ -53,7 +53,7 @@ async def post_one(row: QueuedPost) -> tuple[bool, str]:
         return True, "[dry-run] marked posted"
 
     target = row.platform.replace("upload_post_", "")
-    text = row.body.strip()
+    text = _augment_body(row, cfg)
     target_linkedin_page_id = block.get("target_linkedin_page_id") if target == "linkedin" else None
     content_type = row.content_type or ("carousel" if target == "linkedin" else "text")
 
@@ -446,3 +446,51 @@ async def _post_via_linkedin_native(
             row_id=row.id, error=str(exc)[:200],
         )
     return True, "posted (linkedin native)"
+
+
+# ---------------------------------------------------------------------------
+# Body augmentation — auto-append hashtags + github link when missing
+# ---------------------------------------------------------------------------
+
+def _augment_body(row: QueuedPost, cfg: dict) -> str:
+    """Append per-brand hashtags + repo link if the operator's body didn't
+    include them. Idempotent: a body that already has the tags / link is
+    returned unchanged.
+
+    Hashtag source (in priority order):
+      - cfg["platforms"][row.platform]["hashtags"]    — platform-specific
+      - cfg["default_hashtags"]                       — brand-wide
+
+    Repo link source:
+      - cfg["platforms"][row.platform]["default_repo_link"]
+      - cfg["default_repo_link"]
+    """
+    body = (row.body or "").strip()
+    if not body:
+        return body
+
+    block = (cfg.get("platforms", {}) or {}).get(row.platform) or {}
+    hashtags = list(block.get("hashtags") or cfg.get("default_hashtags") or [])
+    repo_link = block.get("default_repo_link") or cfg.get("default_repo_link") or ""
+
+    additions: list[str] = []
+
+    if repo_link:
+        # Heuristic: only append if no link to the same domain is in the body.
+        domain = repo_link.replace("https://", "").replace("http://", "").split("/")[0]
+        if domain and domain not in body:
+            additions.append(repo_link)
+
+    if hashtags:
+        # Detect any tag already present (case-insensitive).
+        body_lower = body.lower()
+        missing = [t for t in hashtags if t.lower() not in body_lower]
+        if missing:
+            additions.append(" ".join(missing))
+
+    if not additions:
+        return body
+
+    # Two newlines if body ends with a paragraph; one newline if a single line.
+    sep = "\n\n" if "\n\n" in body else "\n"
+    return f"{body}{sep}{' '.join(additions)}"
