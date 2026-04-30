@@ -182,24 +182,110 @@ async def generate_designed_image(
         )
         return pathlib.Path(f"/tmp/dry-run-designed-{uuid.uuid4().hex[:8]}.png")
 
-    if not s.fal_api_key:
-        raise ImageGenError("FAL_API_KEY is not set")
-
     out_dir = pathlib.Path(s.video_storage_path) / "images" / brand_id
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{uuid.uuid4().hex}.png"
 
-    image_url = await _generate_via_gpt_image_2(
-        prompt=prompt, aspect=aspect, quality=quality, model=model,
-    )
-    await _download(image_url, out_path)
+    # Provider routing: prefer OpenAI direct when OPENAI_API_KEY is set.
+    # Direct route is the same model OpenAI publishes (gpt-image-1 in the
+    # public catalog; "gpt-image-2" if/when GA), accessed via the Images
+    # API. Fal.ai is the historical fallback path; we route to it only
+    # when the OpenAI key isn't configured.
+    if s.openai_api_key:
+        await _generate_via_openai_direct(
+            prompt=prompt, aspect=aspect, quality=quality, out_path=out_path,
+        )
+        provider = "openai-direct"
+    else:
+        if not s.fal_api_key:
+            raise ImageGenError("Neither OPENAI_API_KEY nor FAL_API_KEY is set")
+        image_url = await _generate_via_gpt_image_2(
+            prompt=prompt, aspect=aspect, quality=quality, model=model,
+        )
+        await _download(image_url, out_path)
+        provider = f"fal:{model}"
 
     log.info(
         "image_gen.designed.done",
-        brand_id=brand_id, model=model, quality=quality,
+        brand_id=brand_id, provider=provider, quality=quality,
         path=str(out_path), size_kb=out_path.stat().st_size // 1024,
     )
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Images API direct (preferred when OPENAI_API_KEY is set)
+# ---------------------------------------------------------------------------
+
+# OpenAI's Images API takes a discrete `size` string. Map our aspect names
+# to the closest officially-supported size on gpt-image-1.
+_OPENAI_SIZE_MAP: dict[str, str] = {
+    "1:1":  "1024x1024",
+    "4:5":  "1024x1536",   # closest portrait — used for LI carousel slides
+    "4:3":  "1024x1536",
+    "16:9": "1536x1024",
+}
+
+# OpenAI's gpt-image-1 defaults to b64_json output. Some accounts/models
+# also support `url`; b64 is universally supported, so use that.
+_OPENAI_IMAGE_MODEL = "gpt-image-1"
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type(
+        (httpx.HTTPError, asyncio.TimeoutError, ImageGenError)
+    ),
+)
+async def _generate_via_openai_direct(
+    *,
+    prompt: str,
+    aspect: AspectRatio,
+    quality: DesignQuality,
+    out_path: pathlib.Path,
+) -> None:
+    """Call OpenAI Images API directly. Decodes the b64 response, writes
+    the PNG bytes to out_path."""
+    import base64
+    s = settings()
+    api_key = s.openai_api_key
+    size = _OPENAI_SIZE_MAP.get(aspect, "1024x1024")
+    payload = {
+        "model": _OPENAI_IMAGE_MODEL,
+        "prompt": prompt,
+        "size": size,
+        "quality": quality,
+        "n": 1,
+    }
+    async with httpx.AsyncClient(timeout=300) as client:
+        resp = await client.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+    if resp.status_code >= 400:
+        raise ImageGenError(
+            f"OpenAI Images API {resp.status_code}: {resp.text[:400]}"
+        )
+    data = resp.json().get("data") or []
+    if not data:
+        raise ImageGenError(f"OpenAI Images API returned no data: {resp.text[:300]}")
+    b64 = data[0].get("b64_json")
+    if not b64:
+        # Some models return `url` instead — handle that too.
+        url = data[0].get("url")
+        if url:
+            await _download(url, out_path)
+            return
+        raise ImageGenError(
+            f"OpenAI Images API: no b64_json or url in response: {data[0]!r}"
+        )
+    out_path.write_bytes(base64.b64decode(b64))
 
 
 @retry(
