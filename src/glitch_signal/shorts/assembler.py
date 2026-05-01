@@ -1,14 +1,18 @@
-"""ffmpeg compositor: stills + Ken Burns + ElevenLabs voiceover → 1080x1920 mp4.
+"""ffmpeg compositor v2: motion clips + voiceover + burned captions → mp4.
 
-Two-pass approach:
-  1. Pad each still to 1080x1920 (scale-fit + black bars where needed).
-  2. Build per-segment Ken Burns (slow zoom) clips, lengths derived from
-     the audio duration evenly distributed.
-  3. Concat the clips, mux with the voiceover, output one mp4.
+Inputs (all per-segment, in order):
+  - motion_clip_paths: 5-second mp4s from motion.animate_all (one per
+    still — already has real movement, replaces the v1 Ken Burns zoom)
+  - voice_path: full ElevenLabs mp3 of hook + segments + cta
+  - subtitles_path: optional .ass file with word-level captions
 
-Caption burn-in is optional (off by default) — the spoken voiceover
-carries the message, and burning text on top of already-text-heavy
-gpt-image-2 stills tends to look noisy. Re-enable via burn_captions=True.
+Pipeline:
+  1. Each motion clip is trimmed to its allotted duration (the audio's
+     natural pacing decides per-segment time).
+  2. Clips are scaled / padded to 1080x1920 if needed (most i2v models
+     output 1024x576-ish, we re-scale + center-pad).
+  3. Concat all clips, mux with the voiceover, burn captions.
+  4. Output: libx264 yuv420p mp4 with faststart.
 """
 from __future__ import annotations
 
@@ -31,66 +35,68 @@ W, H = 1080, 1920
 async def assemble(
     *,
     brand_id: str,
-    script: dict,
-    frame_paths: list[pathlib.Path],
+    motion_clip_paths: list[pathlib.Path],
     voice_path: pathlib.Path,
+    subtitles_path: pathlib.Path | None = None,
     out_path: pathlib.Path | None = None,
-    burn_captions: bool = False,
 ) -> pathlib.Path:
-    """Compose one 1080x1920 mp4 from frames + voiceover. Returns mp4 path."""
+    """Concat motion clips + voiceover + (optional) captions → 1080x1920 mp4."""
     s = settings()
     out_dir = pathlib.Path(s.video_storage_path) / "shorts" / brand_id
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_path or (out_dir / f"{uuid.uuid4().hex}.mp4")
 
-    if len(frame_paths) < 2:
-        raise RuntimeError(f"need ≥2 frames, got {len(frame_paths)}")
+    if not motion_clip_paths:
+        raise RuntimeError("no motion clips supplied")
 
     audio_seconds = await _probe_duration(voice_path)
     if audio_seconds <= 0:
         raise RuntimeError(f"voice file has no duration: {voice_path}")
 
-    # Distribute total audio time across frames evenly. The hook + cta
-    # frames (first + last) get a slight bonus so they breathe.
-    n = len(frame_paths)
+    # Distribute audio time across clips. Hook + CTA get a slight bonus
+    # so the bookend frames breathe.
+    n = len(motion_clip_paths)
     base = audio_seconds / n
     durations = [base] * n
-    bonus = min(0.6, base * 0.3)
-    durations[0] += bonus
-    durations[-1] += bonus
-    # Renormalize so total still equals audio_seconds
+    bonus = min(0.5, base * 0.15)
+    if n >= 3:
+        durations[0] += bonus
+        durations[-1] += bonus
     total = sum(durations)
     durations = [d * audio_seconds / total for d in durations]
 
     log.info(
         "shorts.assemble.plan",
         brand_id=brand_id,
-        frames=n,
+        clips=n,
         audio_seconds=round(audio_seconds, 2),
-        per_frame=[round(d, 2) for d in durations],
+        per_clip=[round(d, 2) for d in durations],
+        captions=bool(subtitles_path),
     )
 
-    # Build filtergraph for Ken Burns on each still + concat
-    filter_parts: list[str] = []
+    # Build ffmpeg filter graph: scale + pad each clip to 1080x1920,
+    # trim to its target duration, then concat.
     inputs: list[str] = []
-    for i, (path, dur) in enumerate(zip(frame_paths, durations, strict=True)):
-        inputs += ["-loop", "1", "-t", f"{dur:.3f}", "-i", str(path)]
-        # zoompan creates the Ken Burns; scale to 1080x1920 with pad
-        zoom_steps = max(1, int(dur * 25))  # 25 fps inside the zoompan
-        # Alternate zoom direction per frame so it doesn't feel mechanical
-        zoom_in = (i % 2 == 0)
-        zexpr = "zoom+0.0008" if zoom_in else "if(eq(on,1),1.06,zoom-0.0008)"
+    filter_parts: list[str] = []
+    for i, (clip, dur) in enumerate(zip(motion_clip_paths, durations, strict=True)):
+        inputs += ["-stream_loop", "-1", "-t", f"{dur:.3f}", "-i", str(clip)]
         filter_parts.append(
-            f"[{i}:v]scale=2160:-1,zoompan=z='{zexpr}'"
-            f":d={zoom_steps}:s={W}x{H}:fps=30,"
-            f"setpts=PTS-STARTPTS,format=yuv420p[v{i}]"
+            f"[{i}:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+            f"crop={W}:{H},setsar=1,fps=30,format=yuv420p[v{i}]"
         )
-    concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[vout]"
-    filter_parts.append(concat)
+    concat_inputs = "".join(f"[v{i}]" for i in range(n))
+    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[vraw]")
 
-    # Audio is the voiceover, attached as one input after all frames
+    if subtitles_path and subtitles_path.exists():
+        # Burn the .ass file. The path needs to be escaped for ffmpeg's
+        # filter syntax (colons / commas inside the value are bad).
+        sub = str(subtitles_path).replace(":", r"\:").replace(",", r"\,")
+        filter_parts.append(f"[vraw]subtitles='{sub}'[vout]")
+    else:
+        filter_parts.append("[vraw]copy[vout]")
+
     inputs += ["-i", str(voice_path)]
-    audio_idx = n  # index of audio input
+    audio_idx = n
 
     cmd = [
         "ffmpeg", "-y",
@@ -122,7 +128,6 @@ async def assemble(
 # ---------------------------------------------------------------------------
 
 async def _probe_duration(path: pathlib.Path) -> float:
-    """ffprobe a media file's duration in seconds."""
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
@@ -143,13 +148,11 @@ async def _probe_duration(path: pathlib.Path) -> float:
 
 
 async def _run(cmd: list[str]) -> None:
-    """Run ffmpeg and surface stderr on failure."""
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
-        # Last 1500 chars of stderr is plenty to see the real error
         tail = (stderr.decode(errors="replace") or "")[-1500:]
         raise subprocess.CalledProcessError(
             proc.returncode, cmd, output=None, stderr=tail,

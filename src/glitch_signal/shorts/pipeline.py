@@ -23,6 +23,12 @@ import time
 import structlog
 
 from glitch_signal.shorts.assembler import assemble
+from glitch_signal.shorts.captions import (
+    build_ass_subtitles,
+    transcribe_words,
+    words_json_dump,
+)
+from glitch_signal.shorts.motion import animate_all
 from glitch_signal.shorts.script_writer import write_script
 from glitch_signal.shorts.visuals import render_segments
 from glitch_signal.shorts.voice import render_voiceover
@@ -36,7 +42,14 @@ async def make_short(
     topic: str,
     target_seconds: int = 45,
     quality: str = "high",
+    captions: bool = True,
 ) -> pathlib.Path:
+    """End-to-end: topic → script → stills → motion clips + voice (parallel)
+    → captions → ffmpeg compose → mp4.
+
+    Set captions=False if you want a clean stills + motion + voice video
+    without burned word-level subtitles.
+    """
     t0 = time.time()
     log.info("shorts.pipeline.start", brand_id=brand_id, topic=topic[:120])
 
@@ -50,7 +63,7 @@ async def make_short(
         segments=len(script["segments"]),
     )
 
-    # 2. Visuals + voice in parallel — they don't depend on each other
+    # 2. Stills + voice in parallel — they don't depend on each other
     visuals_task = asyncio.create_task(
         render_segments(brand_id=brand_id, script=script, quality=quality)
     )
@@ -58,13 +71,46 @@ async def make_short(
         render_voiceover(brand_id=brand_id, script=script)
     )
     frame_paths, voice_path = await asyncio.gather(visuals_task, voice_task)
+    log.info(
+        "shorts.pipeline.stills_voice_done",
+        frames=len(frame_paths),
+        voice=str(voice_path.name),
+    )
 
-    # 3. Assemble
+    # 3. Animate stills (per-clip motion via fal.ai WAN i2v) and
+    #    transcribe voiceover for word-level captions — both in parallel.
+    motion_task = asyncio.create_task(
+        animate_all(brand_id=brand_id, still_paths=frame_paths)
+    )
+    if captions:
+        caption_task = asyncio.create_task(transcribe_words(voice_path))
+    else:
+        caption_task = None
+    motion_clips = await motion_task
+    log.info("shorts.pipeline.motion_done", clips=len(motion_clips))
+
+    subtitles_path = None
+    if caption_task is not None:
+        words = await caption_task
+        if words:
+            from glitch_signal.config import settings
+            subtitles_dir = (
+                pathlib.Path(settings().video_storage_path)
+                / "shorts" / brand_id / "captions"
+            )
+            subtitles_dir.mkdir(parents=True, exist_ok=True)
+            stem = motion_clips[0].stem.split("_")[-1]
+            words_json_dump(words, subtitles_dir / f"{stem}.words.json")
+            subtitles_path = build_ass_subtitles(
+                words, out_path=subtitles_dir / f"{stem}.ass",
+            )
+
+    # 4. Assemble
     mp4 = await assemble(
         brand_id=brand_id,
-        script=script,
-        frame_paths=frame_paths,
+        motion_clip_paths=motion_clips,
         voice_path=voice_path,
+        subtitles_path=subtitles_path,
     )
 
     elapsed = time.time() - t0
