@@ -231,7 +231,8 @@ class OrmResponse(SQLModel, table=True):
     auto_send_at: datetime | None = None
     sent_at: datetime | None = None
     sent_by: str | None = None        # auto | human
-    telegram_message_id: int | None = None
+    discord_message_id: str | None = None
+    discord_channel_id: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

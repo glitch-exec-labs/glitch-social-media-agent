@@ -5,19 +5,21 @@ Two entry paths, chosen per-invocation via `state["content_source"]`:
   ai_generated (default, Glitch Executor):
     scout → script_writer → storyboard → video_router → video_generator → END
     [scheduler re-enters at video_assembler when all shots complete]
-    video_assembler → quality_check → [pass]     → telegram_preview → END
+    video_assembler → quality_check → [pass]     → END (Discord preview)
                                     → [retry]    → storyboard (retry_count < 2)
-                                    → [escalate] → END (Telegram alert sent)
+                                    → [escalate] → END (Discord alert)
 
   drive_footage (drive-footage — pre-edited clips from a Drive folder):
-    drive_scout → caption_writer → telegram_preview → END
+    drive_scout → caption_writer → END (Discord preview)
     [video generation + QC are bypassed — footage is post-ready]
 
-If content_source is absent, routing defaults to ai_generated so existing
-/jobs/scout callers behave exactly as before this PR.
+Approval / preview / escalation surface lives in Discord now (host-bot
+plugin polls DB for pending rows). The Telegram bot was retired
+2026-05-01 — see commits removing the telegram/ module.
 """
 from __future__ import annotations
 
+import structlog
 from langgraph.graph import END, StateGraph
 
 from glitch_signal.agent.nodes.caption_writer import caption_writer_node
@@ -26,12 +28,13 @@ from glitch_signal.agent.nodes.quality_check import quality_check_node
 from glitch_signal.agent.nodes.scout import scout_node
 from glitch_signal.agent.nodes.script_writer import script_writer_node
 from glitch_signal.agent.nodes.storyboard import storyboard_node
-from glitch_signal.agent.nodes.telegram_preview import telegram_preview_node
 from glitch_signal.agent.nodes.text_writer import text_writer_node
 from glitch_signal.agent.nodes.video_assembler import video_assembler_node
 from glitch_signal.agent.nodes.video_generator import video_generator_node
 from glitch_signal.agent.nodes.video_router import video_router_node
 from glitch_signal.agent.state import SignalAgentState
+
+log = structlog.get_logger(__name__)
 
 MAX_QC_RETRIES = 2
 
@@ -46,32 +49,18 @@ def _qc_router(state: SignalAgentState) -> str:
 
 
 async def _escalate_node(state: SignalAgentState) -> SignalAgentState:
-    """Send Telegram alert when QC fails after max retries."""
-    import structlog
-
-    from glitch_signal.config import settings
-    log = structlog.get_logger(__name__)
-
+    """QC escalation. Logs the failure; the Discord host-bot plugin will
+    surface the row when its polling loop sees status='failed'."""
     asset_id = state.get("asset_id", "unknown")
     script_id = state.get("script_id", "unknown")
     qc_notes = state.get("qc_notes", "")
 
-    msg = (
-        f"QC escalation — video failed after {MAX_QC_RETRIES} retries\n"
-        f"Script: {script_id[:8]}\n"
-        f"Asset: {asset_id[:8]}\n"
-        f"Notes: {qc_notes[:200]}"
+    log.error(
+        "graph.qc_escalated",
+        script_id=script_id, asset_id=asset_id,
+        qc_notes=qc_notes[:200],
+        retries=MAX_QC_RETRIES,
     )
-    log.error("graph.qc_escalated", script_id=script_id, asset_id=asset_id)
-
-    if not settings().is_dry_run:
-        try:
-            from telegram import Bot
-            bot = Bot(token=settings().telegram_bot_token_signal)
-            for admin_id in settings().admin_telegram_ids:
-                await bot.send_message(chat_id=admin_id, text=msg)
-        except Exception as exc:
-            log.error("graph.escalate_telegram_failed", error=str(exc))
 
     return {**state, "error": f"QC failed after {MAX_QC_RETRIES} retries: {qc_notes}"}
 
@@ -117,7 +106,6 @@ def build_graph() -> StateGraph:
     graph.add_node("video_generator", video_generator_node)
     graph.add_node("video_assembler", video_assembler_node)
     graph.add_node("quality_check", quality_check_node)
-    graph.add_node("telegram_preview", telegram_preview_node)
     graph.add_node("escalate", _escalate_node)
 
     # drive_footage branch (drive-footage)
@@ -140,7 +128,7 @@ def build_graph() -> StateGraph:
             "end": END,
         },
     )
-    graph.add_edge("text_writer", END)   # text_writer sends its own Telegram preview
+    graph.add_edge("text_writer", END)   # text_writer marks status; Discord plugin polls
     graph.add_edge("script_writer", "storyboard")
     graph.add_edge("storyboard", "video_router")
     graph.add_edge("video_router", "video_generator")
@@ -148,7 +136,7 @@ def build_graph() -> StateGraph:
 
     # drive_footage path — no video gen, no assembler, no QC
     graph.add_edge("drive_scout", "caption_writer")
-    graph.add_edge("caption_writer", "telegram_preview")
+    graph.add_edge("caption_writer", END)
 
     # Assembler branch (scheduler-triggered re-entry for ai_generated)
     graph.add_edge("video_assembler", "quality_check")
@@ -156,12 +144,11 @@ def build_graph() -> StateGraph:
         "quality_check",
         _qc_router,
         {
-            "pass": "telegram_preview",
+            "pass": END,
             "retry": "storyboard",
             "escalate": "escalate",
         },
     )
-    graph.add_edge("telegram_preview", END)
     graph.add_edge("escalate", END)
 
     return graph.compile()

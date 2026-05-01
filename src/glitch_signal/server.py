@@ -4,7 +4,9 @@ Endpoints:
   GET  /healthz                    — liveness
   POST /jobs/scout                 — trigger Scout node manually
   POST /jobs/assemble/{script_id}  — trigger VideoAssembler for a script
-  POST /telegram/webhook           — Telegram Update receiver
+
+Approval / HITL surface lives in Discord now (glitch-discord-bot service +
+in-process plugin). The Telegram bot was retired 2026-05-01.
 """
 from __future__ import annotations
 
@@ -15,7 +17,6 @@ import structlog
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlmodel import select
-from telegram import Update
 
 from glitch_signal import __version__
 from glitch_signal.config import brand_ids, settings
@@ -31,24 +32,16 @@ app = FastAPI(
     description="Autonomous social video + ORM agent for Glitch Executor.",
 )
 
-_tg_app = None
 _graph = None
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    global _tg_app, _graph
+    global _graph
 
     # Build LangGraph
     from glitch_signal.agent.graph import get_graph
     _graph = get_graph()
-
-    # Build and start Telegram bot (webhook mode)
-    if settings().telegram_bot_token_signal:
-        from glitch_signal.telegram.bot import build_app
-        _tg_app = build_app()
-        await _tg_app.initialize()
-        await _tg_app.start()
 
     # Start scheduler
     from glitch_signal.scheduler.queue import start as start_scheduler
@@ -61,10 +54,6 @@ async def startup() -> None:
 async def shutdown() -> None:
     from glitch_signal.scheduler.queue import stop as stop_scheduler
     stop_scheduler()
-
-    if _tg_app:
-        await _tg_app.stop()
-        await _tg_app.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +122,7 @@ async def job_drive_scout(request: Request, brand: str) -> dict:
     """Trigger the drive_footage pipeline for a brand.
 
     Reads the brand's drive_folder_id from config, discovers new video files,
-    downloads them, and runs drive_scout → caption_writer → telegram_preview
+    downloads them, and runs drive_scout → caption_writer → publisher
     for the first new signal. Returns immediately after dispatching.
     """
     from glitch_signal.config import brand_config, brand_ids
@@ -170,21 +159,6 @@ async def job_drive_scout(request: Request, brand: str) -> dict:
         "brand": brand,
         "message": "drive_scout dispatched in background",
     }
-
-
-# ---------------------------------------------------------------------------
-# Telegram webhook
-# ---------------------------------------------------------------------------
-
-@app.post("/telegram/webhook")
-async def telegram_webhook(request: Request) -> Response:
-    if not _tg_app:
-        raise HTTPException(status_code=503, detail="Telegram bot not configured")
-
-    data = await request.json()
-    update = Update.de_json(data, _tg_app.bot)
-    await _tg_app.process_update(update)
-    return Response(status_code=200)
 
 
 # ---------------------------------------------------------------------------

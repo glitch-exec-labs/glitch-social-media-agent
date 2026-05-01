@@ -587,7 +587,7 @@ def _load_playbook(cfg: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Telegram preview (text version — no video attachment)
+# Discord preview (text version — no video attachment)
 # ---------------------------------------------------------------------------
 
 async def _send_text_preview(
@@ -598,48 +598,23 @@ async def _send_text_preview(
     body: str,
     veto_deadline: datetime,
 ) -> None:
+    """Mark the row pending; the host-bot Discord plugin polls for these
+    and posts the approval embed in #grow-social. Telegram surface
+    retired 2026-05-01.
+    """
     if settings().is_dry_run:
         log.info("text_writer.preview.dry_run", sp_id=sp_id, platform=platform_key)
         return
 
-    # No Telegram bot configured → skip preview, don't crash. The
-    # ScheduledPost is still in pending_veto and will auto-promote to
-    # queued after the veto window; the operator can approve via the
-    # /veto & /list admin commands once the bot is wired in.
-    token = settings().telegram_bot_token_signal
-    admin_ids = settings().admin_telegram_ids
-    if not token or not admin_ids:
-        log.warning(
-            "text_writer.preview.skipped_no_telegram",
-            sp_id=sp_id,
-            platform=platform_key,
-            reason="TELEGRAM_BOT_TOKEN_SIGNAL or TELEGRAM_ADMIN_IDS not set",
-        )
-        return
-
-    from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-
-    bot = Bot(token=token)
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Approve now", callback_data=f"approve:{sp_id}"),
-        InlineKeyboardButton("Veto", callback_data=f"veto:{sp_id}"),
-    ]])
-
-    display = brand_config(brand_id).get("display_name", brand_id)
-    platform_label = platform_key.replace("upload_post_", "").upper()
-    chars = len(body)
-
-    header = (
-        f"[{display}] Text preview — {platform_label}\n"
-        f"{chars} chars · ID: {sp_id[:8]}\n"
-        f"Auto-publishes at {veto_deadline.strftime('%Y-%m-%d %H:%M UTC')}\n"
-        f"───\n"
+    # The Discord host-bot plugin (glitch-discord-bot/social_media_agent_integration.py)
+    # already polls for pending rows every 30s and posts the embed itself.
+    # Nothing to do here at preview time — this function is retained so
+    # legacy callers don't break.
+    log.info(
+        "text_writer.preview.queued_for_discord",
+        sp_id=sp_id,
+        brand_id=brand_id,
+        platform=platform_key,
+        chars=len(body),
+        veto_deadline=str(veto_deadline),
     )
-    # Telegram message limit is ~4096 chars; our posts are well under that
-    full = header + body
-
-    for admin_id in admin_ids:
-        try:
-            await bot.send_message(chat_id=admin_id, text=full, reply_markup=keyboard)
-        except Exception as exc:
-            log.warning("text_writer.preview_send_failed", admin_id=admin_id, error=str(exc))

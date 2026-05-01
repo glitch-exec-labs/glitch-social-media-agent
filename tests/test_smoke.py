@@ -380,11 +380,6 @@ class TestConfig:
         assert bc["brand"]["base_color"] == "#0a0a0f"
         assert "hard_stop_phrases" in bc["orm_guardrails"]
 
-    def test_admin_ids_parsing(self):
-        from glitch_signal.config import Settings
-        s = Settings(telegram_admin_ids="123,456,789")
-        assert s.admin_telegram_ids == {123, 456, 789}
-
     def test_github_repo_list(self):
         from glitch_signal.config import Settings
         s = Settings(github_repos="glitch-cod-confirm,glitch-grow-ads-agent")

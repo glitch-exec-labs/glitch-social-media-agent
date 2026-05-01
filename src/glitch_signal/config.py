@@ -83,10 +83,6 @@ class Settings(BaseSettings):
     ig_access_token: str = ""
     ig_user_id: str = ""
 
-    # --- Telegram ---
-    telegram_bot_token_signal: str = ""
-    telegram_admin_ids: str = ""  # csv of int ids, e.g. "6280075826,123456"
-
     # --- Storage ---
     video_storage_path: str = "/var/lib/glitch-signal/videos"
 
@@ -217,15 +213,6 @@ class Settings(BaseSettings):
     publish_retry_1_ms: int = 1_800_000   # 30 min
     publish_retry_2_ms: int = 7_200_000   # 2 h
     orm_review_window_s: int = 7_200      # 2 h
-
-    @property
-    def admin_telegram_ids(self) -> set[int]:
-        out: set[int] = set()
-        for raw in (self.telegram_admin_ids or "").split(","):
-            raw = raw.strip()
-            if raw.isdigit():
-                out.add(int(raw))
-        return out
 
     @property
     def github_repo_list(self) -> list[str]:

@@ -116,7 +116,7 @@ async def _poll_twitter() -> int:
                 mention_id=mention_id,
                 hit_phrase=hit_phrase,
             )
-            await _alert_telegram(
+            await _alert_discord(
                 f"GUARDRAIL HIT on Twitter mention {mention_id}\n"
                 f"Phrase: {hit_phrase}\n"
                 f"Body: {body[:200]}"
@@ -145,11 +145,16 @@ async def _already_seen(mention_id: str) -> bool:
         return result.scalar_one_or_none() is not None
 
 
-async def _alert_telegram(message: str) -> None:
+async def _alert_discord(message: str) -> None:
+    """Post a guardrail alert into the Discord control-plane channel.
+    Replaces the Telegram alert path that was retired 2026-05-01."""
+    import os
+    channel_id = (os.environ.get("SOCIAL_MEDIA_AGENT_CHANNEL_ID") or "").strip()
+    if not channel_id:
+        log.warning("monitor.discord_alert_skipped_no_channel")
+        return
     try:
-        from telegram import Bot
-        bot = Bot(token=settings().telegram_bot_token_signal)
-        for admin_id in settings().admin_telegram_ids:
-            await bot.send_message(chat_id=admin_id, text=message)
+        from glitch_signal.discord.rest import post_message
+        await post_message(channel_id, content=f"⚠️ {message}")
     except Exception as exc:
-        log.error("monitor.telegram_alert_failed", error=str(exc))
+        log.error("monitor.discord_alert_failed", error=str(exc)[:300])

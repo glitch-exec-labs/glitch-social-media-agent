@@ -205,9 +205,15 @@ async def _queue_for_review(event: MentionEvent, draft: str, review_s: int) -> N
         await session.commit()
         resp_id = orm_resp.id
 
-    # Notify Telegram with approve/veto buttons
-    await _telegram_review_request(event, draft, resp_id, auto_send_at)
-    log.info("responder.queued_for_review", mention_id=event.mention_id, auto_send_at=str(auto_send_at))
+    # Notify Discord — host-bot plugin polls OrmResponse rows by status
+    # and posts the embed in #grow-social. We just leave the row pending
+    # here; no inline send needed.
+    log.info(
+        "responder.queued_for_review",
+        mention_id=event.mention_id,
+        resp_id=resp_id,
+        auto_send_at=str(auto_send_at),
+    )
 
 
 async def _escalate(event: MentionEvent) -> None:
@@ -231,46 +237,17 @@ async def _escalate(event: MentionEvent) -> None:
         session.add(orm_resp)
         await session.commit()
 
+    # Discord alert for the escalation. Channel: #grow-social via host-bot plugin.
+    import os
+    channel_id = (os.environ.get("SOCIAL_MEDIA_AGENT_CHANNEL_ID") or "").strip()
+    if not channel_id:
+        log.warning("responder.escalate_skipped_no_discord_channel")
+        return
     try:
-        from telegram import Bot
-        bot = Bot(token=settings().telegram_bot_token_signal)
-        for admin_id in settings().admin_telegram_ids:
-            await bot.send_message(chat_id=admin_id, text=msg)
+        from glitch_signal.discord.rest import post_message
+        await post_message(channel_id, content=f"🚨 {msg}")
     except Exception as exc:
-        log.error("responder.escalate_telegram_failed", error=str(exc))
-
-
-async def _telegram_review_request(
-    event: MentionEvent, draft: str, resp_id: str, auto_send_at: datetime
-) -> None:
-    from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-
-    msg = (
-        f"ORM review ({event.tier}) — {event.platform}\n"
-        f"From: {event.from_handle}\n"
-        f"Mention: {event.body[:200]}\n\n"
-        f"Draft response:\n{draft}\n\n"
-        f"Auto-sends at {auto_send_at.strftime('%H:%M UTC')} if not vetoed."
-    )
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Send now", callback_data=f"orm_approve:{resp_id}"),
-        InlineKeyboardButton("Veto", callback_data=f"orm_veto:{resp_id}"),
-    ]])
-
-    try:
-        bot = Bot(token=settings().telegram_bot_token_signal)
-        for admin_id in settings().admin_telegram_ids:
-            msg_obj = await bot.send_message(
-                chat_id=admin_id, text=msg, reply_markup=keyboard
-            )
-            factory = _session_factory()
-            async with factory() as session:
-                r = await session.get(OrmResponse, resp_id)
-                if r:
-                    r.telegram_message_id = msg_obj.message_id
-                    await session.commit()
-    except Exception as exc:
-        log.error("responder.telegram_review_failed", error=str(exc))
+        log.error("responder.escalate_discord_failed", error=str(exc)[:300])
 
 
 async def _post_reply(event: MentionEvent, draft: str) -> None:

@@ -49,9 +49,6 @@ dependencies = [
   # Video assembly
   "ffmpeg-python>=0.2.0",
 
-  # Telegram
-  "python-telegram-bot[rate-limiter,webhooks]>=21.6",
-
   # Utilities
   "structlog>=24.4",
   "tenacity>=9.0",
