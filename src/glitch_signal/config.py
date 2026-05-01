@@ -121,6 +121,11 @@ class Settings(BaseSettings):
     tiktok_default_scopes: str = "user.info.basic,video.upload,video.publish"
     tiktok_post_status_timeout_s: int = 180
 
+    # --- ElevenLabs (TTS for YouTube Shorts pipeline) ---
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Rachel (default)
+    elevenlabs_model: str = "eleven_turbo_v2_5"        # ~80% cheaper, fast
+
     # --- Make.com (automation platform) ---
     # Zone-bound. us1 / us2 / eu1 / eu2 — do NOT mix zones across base URL
     # and token; a token issued on us2 is rejected by us1 and vice versa.
