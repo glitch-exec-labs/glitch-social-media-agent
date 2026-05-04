@@ -4,18 +4,19 @@ LinkedIn document posts (PDF carousels) are the highest-engagement format on
 the platform — 24.42% avg vs ~4% for text-only. This module produces one
 ready-to-upload PDF per signal for a text brand.
 
-Rendering pipeline (April 2026 rebuild):
+Rendering pipeline (May 2026 rebuild — back to template-driven):
 
   1. LLM           → slide structure (hook, N body slides, CTA)
-  2. gpt-image-2   → one fully-designed slide per entry, text rendered
-                     inside the image by the model, Canva-level typography
-                     and composition; no Pillow overlay
-  3. img2pdf       → stitch slide PNGs into a single PDF
+  2. Leonardo      → one abstract BACKGROUND per slide (no text in prompt)
+  3. Pillow        → render real typography + chrome + per-archetype graphics
+                     on top of the background — code-driven layout, not AI-baked
+  4. img2pdf       → stitch slide PNGs into a single PDF
 
-Previously used FLUX-schnell for backgrounds + Pillow to overlay text. The
-overlay looked "stamped" — text sat on top of a background rather than
-being part of the composition. gpt-image-2 renders short-to-medium text
-first-try with brand-consistent design, so we switched.
+Why we reverted: gpt-image-2 produced beautiful but generic AI-poster slides
+with mis-spelt headlines, drifting margins, and unreadable body type at
+LinkedIn's 1080+ render. Image models are not layout engines. The right
+split is "AI for visuals, code for typography" — Leonardo gives us a
+poster-grade background per slide; Pillow places exact text and chrome.
 
 Output lands at `{settings.video_storage_path}/carousels/{brand_id}/<uuid>.pdf`.
 Every call produces a fresh file.
@@ -42,8 +43,7 @@ from glitch_signal.agent.llm import pick
 from glitch_signal.config import brand_config, settings
 from glitch_signal.db.models import Signal
 from glitch_signal.media.image_gen import (
-    generate_designed_image,
-    generate_image,  # retained for legacy callers; new path uses designed
+    generate_background,
 )
 
 log = structlog.get_logger(__name__)
@@ -151,49 +151,66 @@ async def generate_carousel(
     total_slides = 1 + len(slide_data["body"]) + 1
     accent, base, secondary = _brand_colors(brand_id)
 
-    # Build prompts per slide (hook, body[], cta) and generate in parallel.
-    # gpt-image-2 renders the full designed slide — text + composition in
-    # one pass, no Pillow overlay. Parallel generation cuts wall time by ~7×.
-    specs: list[tuple[str, str]] = []  # (slide_role, prompt)
-    specs.append((
-        "hook",
-        _build_slide_prompt(
-            role="hook", slide_num=1, slide_total=total_slides,
-            title=slide_data["hook"]["title"],
-            body=slide_data["hook"]["subtitle"],
-            accent=accent, base=base, secondary=secondary,
-        ),
-    ))
+    # Build per-slide specs: (role, archetype, title, body, optional link).
+    # Each spec drives BOTH a Leonardo background prompt and a Pillow render
+    # pass. Backgrounds are abstract-only — text/chrome placed by Pillow.
+    specs: list[dict[str, Any]] = []
+    specs.append({
+        "role": "hook", "archetype": "hook", "slide_num": 1,
+        "title": slide_data["hook"]["title"],
+        "body": slide_data["hook"]["subtitle"],
+        "link": "",
+    })
+    archetype_cycle = ["split", "stat", "code", "asymmetric", "halo"]
     for i, body in enumerate(slide_data["body"], start=2):
-        specs.append((
-            f"body_{i:02d}",
-            _build_slide_prompt(
-                role="body", slide_num=i, slide_total=total_slides,
-                title=body["title"], body=body["body"],
-                accent=accent, base=base, secondary=secondary,
-            ),
-        ))
-    specs.append((
-        "cta",
-        _build_slide_prompt(
-            role="cta", slide_num=total_slides, slide_total=total_slides,
-            title=slide_data["cta"]["title"],
-            body=slide_data["cta"]["subtitle"],
-            link=slide_data["cta"].get("link", ""),
-            accent=accent, base=base, secondary=secondary,
-        ),
-    ))
+        specs.append({
+            "role": "body",
+            "archetype": archetype_cycle[(i - 2) % len(archetype_cycle)],
+            "slide_num": i,
+            "title": body["title"],
+            "body": body["body"],
+            "link": "",
+        })
+    specs.append({
+        "role": "cta", "archetype": "cta", "slide_num": total_slides,
+        "title": slide_data["cta"]["title"],
+        "body": slide_data["cta"]["subtitle"],
+        "link": slide_data["cta"].get("link", ""),
+    })
 
-    # Fire all slide generations in parallel. Every slide uses quality=high —
-    # text rendering on the medium tier shows visible blur on LinkedIn's
-    # retina/mobile render at 1080+ widths, and the per-slide cost delta
-    # ($0.04 → $0.17) is worth it for a flagship-format deck. ~$1.19/carousel.
-    async def _one(role: str, prompt: str) -> pathlib.Path:
-        return await generate_designed_image(
-            prompt=prompt, brand_id=brand_id, aspect="4:5", quality="high",
+    # Generate backgrounds in parallel via Leonardo. Each prompt asks ONLY
+    # for atmosphere — composition, color, texture — never text. Cost ≈
+    # $0.02–0.05 per Phoenix call → ~$0.15/carousel for 7 slides, vs the
+    # $1.19/carousel we were paying gpt-image-2.
+    async def _bg(spec: dict[str, Any]) -> pathlib.Path:
+        prompt = _build_background_prompt(
+            role=spec["role"], archetype=spec["archetype"],
+            accent=accent, base=base, secondary=secondary,
+        )
+        return await generate_background(
+            prompt=prompt, brand_id=brand_id, aspect="4:5",
         )
 
-    slide_png_paths = await asyncio.gather(*[_one(r, p) for r, p in specs])
+    bg_paths = await asyncio.gather(*[_bg(spec) for spec in specs])
+
+    # Render each slide: background + Pillow text/chrome/decorations.
+    slide_png_dir = pathlib.Path(s.video_storage_path) / "images" / brand_id
+    slide_png_dir.mkdir(parents=True, exist_ok=True)
+    slide_png_paths: list[pathlib.Path] = []
+    for spec, bg_path in zip(specs, bg_paths):
+        img = _render_slide_v2(
+            background_path=bg_path,
+            archetype=spec["archetype"],
+            slide_num=spec["slide_num"],
+            slide_total=total_slides,
+            title=spec["title"],
+            body=spec["body"],
+            link=spec["link"],
+            accent=accent, base=base, secondary=secondary,
+        )
+        png_path = slide_png_dir / f"slide_{uuid.uuid4().hex}.png"
+        img.save(png_path, format="PNG", optimize=False)
+        slide_png_paths.append(png_path)
 
     out_dir = pathlib.Path(s.video_storage_path) / "carousels" / brand_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -389,382 +406,503 @@ async def generate_carousel_from_body(
 
 
 # ---------------------------------------------------------------------------
-# fal.ai: generate one brand-consistent background per slide
+# Background prompts — one Leonardo call per slide. Backgrounds are
+# atmosphere only: composition, color, texture, depth. NO text, NO UI, NO
+# letters. Pillow lays the actual headline/body/chrome on top.
 # ---------------------------------------------------------------------------
 
-async def _generate_backgrounds(
-    *,
-    slide_data: dict[str, Any],
-    brand_id: str,
-    total: int,
-) -> list[pathlib.Path]:
-    """Generate `total` background images. All share a base visual language so
-    the carousel reads as a set, not a scrapbook.
-    """
-    base_prompt = (
-        "Dark minimal tech background, deep black base with subtle neon green "
-        "circuit patterns, abstract, professional, no text, no humans, no UI, "
-        "minimal composition, cinematic lighting, Glitch Executor brand aesthetic"
-    )
-
-    prompts = []
-    # Hook: the most distinct visual
-    prompts.append(
-        f"{base_prompt}, hero composition with a single strong focal glow, "
-        "bold and intentional"
-    )
-    # Body: calmer, readable backgrounds
-    for _ in slide_data["body"]:
-        prompts.append(
-            f"{base_prompt}, quieter composition so text reads clearly, "
-            "gentle gradient with subtle accent particles"
-        )
-    # CTA: closing visual
-    prompts.append(
-        f"{base_prompt}, closing composition with upward energy, "
-        "convergence of light elements, brand sign-off feel"
-    )
-
-    assert len(prompts) == total, f"expected {total} prompts, got {len(prompts)}"
-
-    async def _one(prompt: str) -> pathlib.Path:
-        return await generate_image(prompt=prompt, brand_id=brand_id, aspect="4:5")
-
-    # Generate in parallel — fal.ai handles it fine, cost is the same
-    paths = await asyncio.gather(*[_one(p) for p in prompts])
-    return list(paths)
-
-
-# ---------------------------------------------------------------------------
-# gpt-image-2 slide prompts — one designed slide per role
-# ---------------------------------------------------------------------------
-
-def _build_slide_prompt(
+def _build_background_prompt(
     *,
     role: str,                 # hook | body | cta
-    slide_num: int,
-    slide_total: int,
-    title: str,
-    body: str,
+    archetype: str,            # hook|cta|split|stat|code|asymmetric|halo
     accent: str,
     base: str,
     secondary: str,
-    link: str = "",
 ) -> str:
-    """Write a gpt-image-2 prompt that renders ONE fully designed slide.
+    """Atmospheric background prompt for Leonardo. Pure visual — no copy.
 
-    Design system (April 2026 v2):
-      - Each slide has a UNIQUE visual motif tied to its position/role, not
-        a single template repeated. gpt-image-2 is asked for actual graphic
-        elements — abstract diagrams, data viz, glyphs, depth fields — so
-        the deck reads as a designed object, not a slide template.
-      - Brand chrome (wordmark, counter, progress bar) stays consistent so
-        the deck still reads as a set.
-      - Hook + CTA are hero compositions with depth and a strong focal motif.
-      - Body slides cycle through layout archetypes (split-grid, full-bleed
-        graphic + caption, large numeric stat, asymmetric block) so no two
-        consecutive slides feel identical.
+    Each archetype gets a slightly different mood so the deck reads as a
+    designed set without being identical seven times. The archetype name
+    matches the Pillow renderer's layout, so backgrounds visually support
+    the foreground composition (e.g. the "stat" archetype gets a focal
+    glow that complements a centered glyph).
     """
-    counter = f"{slide_num:02d} / {slide_total:02d}"
-    progress_pct = int(100 * slide_num / slide_total)
-
-    # Brand chrome — kept consistent across the whole deck so it reads as a set.
-    chrome = (
-        f"Brand chrome (every slide carries these, drawn precisely):\n"
-        f"  • Top-left, 60px from top and 80px from left edge: a 4px-wide x "
-        f"36px-tall vertical bar in bright neon green {accent}, immediately "
-        f"followed by uppercase monospace 18pt white text 'GLITCH · EXECUTOR'.\n"
-        f"  • Top-right, 60px from top and 80px from right edge: monospace "
-        f"18pt text '{counter}' in electric blue {secondary}.\n"
-        f"  • Bottom, 50px from bottom edge, 80px side margins: a 3px-tall "
-        f"horizontal track in dim gray #2a2a2a spanning full width, with the "
-        f"left {progress_pct}% filled in bright neon green {accent}.\n"
-        f"  • Background: deep black {base} with very faint, large-scale "
-        f"isometric circuit-line texture in 4% opacity green, concentrated "
-        f"at the corners. Subtle, never busy.\n"
+    base_style = (
+        "dark editorial poster-grade abstract gradient artwork, deep black "
+        f"base color {base}, soft accent neon green {accent} highlights, "
+        f"accent electric blue {secondary} highlights, premium minimal "
+        "atmospheric composition, smooth volumetric light, fine film grain, "
+        "intentional negative space, designed not templated, Stripe Press "
+        "meets a16z research report aesthetic"
     )
-
-    # Pick a body-slide visual archetype that rotates through the deck so no
-    # two slides look the same. gpt-image-2 actually draws these motifs.
-    body_archetypes = [
-        # 1. Split layout — title block on top half, abstract diagram below
-        (
-            "SPLIT-DIAGRAM LAYOUT: Top 45% of frame is a clean text block, "
-            "left-aligned at 90px margin: large 72pt white headline "
-            f"'{title}', short {accent} underline bar (140px x 4px) directly "
-            f"beneath, then 30pt lighter-gray body text '{body}' wrapped to "
-            f"about 800px width. Bottom 45% of frame: a precise abstract "
-            f"line diagram in bright {accent} on the dark base — three "
-            f"connected nodes with directional arrows between them, "
-            f"thin 2px strokes, geometric, technical-blueprint feel. "
-            f"Diagram occupies center-bottom with even margins."
-        ),
-        # 2. Big-number / data-reveal layout
-        (
-            "DATA-REVEAL LAYOUT: Center the slide on ONE large graphic glyph "
-            f"rendered in {accent} at roughly 380pt — could be a stylized "
-            f"upward arrow, a fractured circle, a waveform, or a percentage "
-            f"sign — geometric and abstract, with 6% opacity duplicate "
-            f"echoes radiating outward for depth. Beneath the glyph, "
-            f"left-aligned at 90px: 56pt bold white headline '{title}' "
-            f"(can wrap to 2 lines), short {accent} underline, then 28pt "
-            f"lighter-gray body '{body}' wrapped to ~880px."
-        ),
-        # 3. Code-frame layout — terminal/IDE aesthetic
-        (
-            "CODE-FRAME LAYOUT: Center 70% of frame contains a stylized code "
-            "or terminal panel: a dark gray #161620 rectangle with rounded "
-            "8px corners, a 6px-tall macOS-style window header bar at top "
-            f"(three muted dots in dim red/yellow/green), and INSIDE the "
-            f"panel: 36pt bold white headline '{title}' on a single visible "
-            f"line, then a {accent} underline (120px), then 24pt monospace "
-            f"body text '{body}' rendered in monospace lighter gray, "
-            f"wrapped naturally. Outside the panel, 90px margins of dark "
-            f"base. Subtle drop shadow under the panel."
-        ),
-        # 4. Asymmetric stack — left text column, right vertical bar of accent dots
-        (
-            "ASYMMETRIC-STACK LAYOUT: Left two-thirds of frame: large 64pt "
-            f"bold white headline '{title}' anchored at 90px from left, "
-            f"vertically centered. Below it a short {accent} underline bar "
-            f"(140px x 4px), then 28pt lighter-gray body '{body}' wrapped "
-            f"to ~640px. Right one-third of frame: a vertical column of "
-            f"7 small {accent} squares (each 12x12px), evenly spaced, "
-            f"running from 200px to 950px down the right edge at 120px "
-            f"from the right — like a precision indicator track."
-        ),
-        # 5. Halo-focus layout — single concept at center with radial energy
-        (
-            "HALO-FOCUS LAYOUT: One concentric radial composition centered "
-            f"in the frame — a precise {accent} ring (320px diameter, 3px "
-            f"stroke) with three smaller faded green concentric rings "
-            f"echoing outward (8% opacity each). At the center of the ring, "
-            f"in 36pt bold white, a single 1-3 word punchline lifted from "
-            f"'{title}'. Below the entire halo, 90px margins, left-aligned: "
-            f"36pt bold white full headline '{title}', a short {accent} "
-            f"underline, then 24pt lighter-gray body '{body}'."
-        ),
-    ]
-
-    if role == "hook":
-        composition = (
-            "HOOK / COVER LAYOUT — this is the hero slide of the deck.\n"
-            f"  • Large depth field: behind the text, a softly glowing "
-            f"radial gradient from a single bright {accent} focal point at "
-            f"roughly 40% from top, 60% from left, fading to dark base at "
-            f"the edges. 25% opacity max — atmospheric, not loud.\n"
-            f"  • Headline block, vertically centered, left-aligned at 90px: "
-            f"OVERSIZED 96pt bold sans-serif white headline '{title}' "
-            f"wrapped naturally to 2-3 lines. Tight letter-spacing, strong "
-            f"baseline grid.\n"
-            f"  • Directly beneath the headline: a 200px x 6px solid "
-            f"{accent} bar, then 8px gap, then 32pt lighter-gray "
-            f"subtitle '{body}' wrapped to ~880px.\n"
-            f"  • Bottom-left, 90px from left, 100px from bottom (above the "
-            f"progress bar): tiny 16pt monospace 'glitchexecutor.com' in "
-            f"#888 muted gray, followed by a 10x10px {secondary} square pip "
-            f"with 12px gap.\n"
-            f"  • Decorative asymmetric line element in {accent}: a single "
-            f"thin 1px diagonal line running from top-right corner area "
-            f"down-left for ~280px, ending in a small filled circle. "
-            f"Adds graphic energy without crowding the text."
-        )
-    elif role == "cta":
-        link_block = (
-            f"  • Below the subtitle, 24px gap: the URL '{link}' rendered in "
-            f"24pt monospace bold {accent}, fitting cleanly in 880px width.\n"
-            if link else ""
-        )
-        composition = (
-            "CTA / CLOSING LAYOUT — sign-off slide with upward energy.\n"
-            f"  • Background depth: an upward-converging line field — six "
-            f"thin {accent} lines at 1-2px stroke, fanning from offscreen "
-            f"bottom-center upward toward a vanishing point near the top "
-            f"third, 15% opacity. Faint perspective grid feel.\n"
-            f"  • Headline block, vertically centered, left-aligned at 90px: "
-            f"72pt bold white '{title}' on 1-2 lines, then a 200px x 6px "
-            f"{accent} bar, then 30pt lighter-gray subtitle '{body}' "
-            f"wrapped to ~880px.\n"
-            f"{link_block}"
-            f"  • Bottom-left, above the progress bar: 16pt monospace "
-            f"'glitchexecutor.com' in #888, followed by a {secondary} pip.\n"
-            f"  • Top-right area below the counter: a small geometric "
-            f"closing glyph in {accent} — three stacked horizontal bars of "
-            f"decreasing length, ~24px tall total. Quiet sign-off mark."
-        )
-    else:  # body — pick archetype by slide_num so consecutive slides differ
-        # Skip slide_num=1 (hook) — body starts at slide 2
-        archetype_idx = (slide_num - 2) % len(body_archetypes)
-        composition = body_archetypes[archetype_idx]
+    role_mood = {
+        "hook": "single strong off-center volumetric light glow, hero composition, bold atmospheric depth",
+        "split": "subtle two-zone gradient with smoother top half, calmer palette so foreground text reads clearly",
+        "stat": "soft radial glow centered, atmospheric depth field with concentric soft light bands",
+        "code": "matte gray-on-black tonality, smooth charcoal gradient, terminal-aesthetic muted mood",
+        "asymmetric": "directional energy pulling left-to-right, calm darker left side and gently active right edge",
+        "halo": "soft concentric bands of light, meditative focused center, radial atmospheric depth",
+        "cta": "upward volumetric light from below, soft perspective gradient, closing sign-off mood",
+    }.get(archetype, "calm minimal atmospheric gradient, faint texture, room for foreground typography")
 
     return (
-        f"A LinkedIn document-carousel slide rendered in 4:5 portrait. "
-        f"Slide {slide_num} of {slide_total} in a cohesive Glitch Executor "
-        f"deck. Aesthetic: dark editorial tech magazine, designed not "
-        f"templated. Think Stripe Press meets a16z research report meets a "
-        f"production-grade engineering blog. Premium, intentional, "
-        f"every element placed for a reason.\n\n"
-        f"FORBIDDEN: humans, faces, hands, photographs, emoji, clipart, "
-        f"stock vectors, generic isometric people, generic 'tech' bokeh. "
-        f"REQUIRED: clean geometric sans-serif typography, perfect "
-        f"spelling, sharp 1-2px strokes for diagrams, true black background, "
-        f"intentional negative space.\n\n"
-        f"{chrome}\n"
-        f"Slide composition for this specific slide:\n{composition}\n"
+        f"{base_style}, {role_mood}. "
+        "No literal patterns, no circuit boards, no schematics, no UI mockups. "
+        "Pure abstract atmosphere — soft gradients, volumetric light, faint "
+        "noise texture only. "
+        "Absolutely no text, no letters, no words, no captions, no logos, "
+        "no buttons, no people, no faces, no hands, no photographs, "
+        "no clipart, no emoji."
     )
 
 
 # ---------------------------------------------------------------------------
-# Pillow: text overlay on a background image (LEGACY — unused since
-# April 2026 rebuild; kept as fallback if the gpt-image-2 path fails.)
+# Pillow renderer v2 — archetype-aware slide composition
+#
+# We render real typography on top of a Leonardo background. Each archetype
+# has its own layout function that places the title, body, and at least one
+# distinct graphic element (diagram, big glyph, terminal panel, dot column,
+# halo rings, hero block, converging lines) so the deck reads as designed
+# rather than identical seven times.
 # ---------------------------------------------------------------------------
 
-def _render_slide(
+CONTENT_X = 90
+CONTENT_W = SLIDE_W - 2 * CONTENT_X
+
+
+def _render_slide_v2(
     *,
     background_path: pathlib.Path,
-    title: str,
-    body: str,
+    archetype: str,                        # hook|cta|split|stat|code|asymmetric|halo
     slide_num: int,
     slide_total: int,
+    title: str,
+    body: str,
+    link: str,
     accent: str,
     base: str,
     secondary: str = "#0088ff",
-    title_size: int = 64,
-    body_size: int = 36,
-    is_hook: bool = False,
-    is_cta: bool = False,
 ) -> Image.Image:
-    """Compose one carousel slide: background + dark overlay + text + chrome."""
-    # Resize background to exact slide dimensions
+    """Compose one carousel slide. Background + darkening + chrome + archetype layout."""
     bg = Image.open(background_path).convert("RGBA")
     bg = _resize_cover(bg, SLIDE_W, SLIDE_H)
 
-    # Darken for text readability — semi-transparent black overlay
-    darkness = 140 if is_hook or is_cta else 170  # hook/cta: slightly lighter so hero detail reads
+    # Darken for text readability. Hero slides keep more of the BG.
+    darkness = 130 if archetype in ("hook", "cta") else 165
     overlay = Image.new("RGBA", (SLIDE_W, SLIDE_H), (0, 0, 0, darkness))
     bg = Image.alpha_composite(bg, overlay)
 
-    # Soft vignette on edges — pulls eye to center text
+    # Soft vignette pulls the eye inward.
     vignette = Image.new("RGBA", (SLIDE_W, SLIDE_H), (0, 0, 0, 0))
     vdraw = ImageDraw.Draw(vignette)
     for i, alpha in enumerate([40, 30, 20, 10]):
         inset = (i + 1) * 20
         vdraw.rectangle(
             [(inset, inset), (SLIDE_W - inset, SLIDE_H - inset)],
-            outline=(0, 0, 0, alpha),
-            width=20,
+            outline=(0, 0, 0, alpha), width=20,
         )
     bg = Image.alpha_composite(bg, vignette)
 
     draw = ImageDraw.Draw(bg)
 
-    # Header — brand block: accent bar + monospace wordmark anchor
-    #   ▌  GLITCH · GROW
-    draw.rectangle([(80, 80), (80 + 12, 80 + 60)], fill=accent)
-    wordmark_font = _font(_FONT_MONO, 22)
-    draw.text(
-        (110, 92),
-        "GLITCH · EXECUTOR",
-        font=wordmark_font,
-        fill=(255, 255, 255, 230),
-    )
+    # ── Brand chrome (consistent on every slide) ───────────────────────────
+    _draw_chrome(draw, slide_num, slide_total, accent, secondary)
 
-    # Slide counter (top-right) in secondary blue for color rhythm
-    mono_small = _font(_FONT_MONO, 24)
-    counter_text = f"{slide_num:02d} / {slide_total:02d}"
-    tw = draw.textlength(counter_text, font=mono_small)
-    draw.text(
-        (SLIDE_W - 80 - tw, 92),
-        counter_text,
-        font=mono_small,
-        fill=_hex_to_rgba(secondary, 230),
-    )
-
-    # Title + body — center-left-aligned block
-    title_font = _font(_FONT_BOLD, title_size)
-    body_font = _font(_FONT_REGULAR, body_size)
-
-    content_x = 90
-    content_width = SLIDE_W - 2 * content_x
-    title_wrapped = _wrap_text(title, title_font, content_width, draw)
-    body_wrapped = _wrap_text(body, body_font, content_width, draw)
-
-    # Vertical layout: put the block ~40% down the slide (rule-of-thirds feel)
-    title_h = _text_block_height(title_wrapped, title_font, draw)
-    body_h = _text_block_height(body_wrapped, body_font, draw)
-    gap = 60
-    total_h = title_h + gap + body_h
-    y_top = (SLIDE_H - total_h) // 2
-
-    # Title
-    y = y_top
-    for line in title_wrapped:
-        draw.text((content_x, y), line, font=title_font, fill=(255, 255, 255, 255))
-        y += title_font.size + 10
-
-    # Accent underline below title
-    y += 20
-    draw.rectangle(
-        [(content_x, y - 10), (content_x + 80, y - 6)],
-        fill=accent,
-    )
-
-    # Body
-    y = y_top + title_h + gap
-    for line in body_wrapped:
-        # CTA link detection — monospace + accent color + fit-to-width
-        if is_cta and ("github.com" in line or "glitchexecutor.com" in line):
-            # URLs never wrap (no spaces), so shrink the font until the
-            # line fits within content_width instead of truncating.
-            link_font = _fit_mono_to_width(line, content_width, body_size - 4)
-            draw.text(
-                (content_x, y),
-                line,
-                font=link_font,
-                fill=accent,
-            )
-            y += link_font.size + 10
-        else:
-            draw.text((content_x, y), line, font=body_font, fill=(230, 230, 230, 255))
-            y += body_font.size + 10
-
-    # ── Footer ─────────────────────────────────────────────────────────────
-    # Progress bar on every slide — thin horizontal line that fills as you
-    # advance through the carousel. Gives the deck a continuous rhythm.
-    bar_y = SLIDE_H - 40
-    bar_margin = 80
-    bar_w = SLIDE_W - 2 * bar_margin
-    # Track (dim)
-    draw.rectangle(
-        [(bar_margin, bar_y), (bar_margin + bar_w, bar_y + 3)],
-        fill=(90, 90, 90, 180),
-    )
-    # Filled portion (bright accent) — proportional to slide_num / total
-    fill_w = int(bar_w * (slide_num / slide_total))
-    draw.rectangle(
-        [(bar_margin, bar_y), (bar_margin + fill_w, bar_y + 3)],
-        fill=accent,
-    )
-
-    # Wordmark footer on hook/cta only — keeps body slides text-focused
-    if is_hook or is_cta:
-        footer_font = _font(_FONT_MONO, 22)
-        footer = "glitchexecutor.com"
-        draw.text(
-            (content_x, SLIDE_H - 95),
-            footer,
-            font=footer_font,
-            fill=(200, 200, 200, 220),
-        )
-        # Secondary-color pip next to the wordmark for color rhythm
-        fw = draw.textlength(footer, font=footer_font)
-        pip_x = content_x + fw + 16
-        draw.rectangle(
-            [(pip_x, SLIDE_H - 90), (pip_x + 8, SLIDE_H - 78)],
-            fill=_hex_to_rgba(secondary, 255),
-        )
+    # ── Archetype layout ───────────────────────────────────────────────────
+    if archetype == "hook":
+        _layout_hook(draw, bg, title, body, accent, secondary)
+    elif archetype == "cta":
+        _layout_cta(draw, bg, title, body, link, accent, secondary)
+    elif archetype == "split":
+        _layout_split(draw, bg, title, body, accent)
+    elif archetype == "stat":
+        _layout_stat(draw, bg, title, body, accent)
+    elif archetype == "code":
+        _layout_code(draw, bg, title, body, accent)
+    elif archetype == "asymmetric":
+        _layout_asymmetric(draw, bg, title, body, accent)
+    elif archetype == "halo":
+        _layout_halo(draw, bg, title, body, accent)
+    else:
+        # Sane default — same as split
+        _layout_split(draw, bg, title, body, accent)
 
     return bg.convert("RGB")
+
+
+# ── Brand chrome ────────────────────────────────────────────────────────────
+
+def _draw_chrome(
+    draw: ImageDraw.ImageDraw,
+    slide_num: int,
+    slide_total: int,
+    accent: str,
+    secondary: str,
+) -> None:
+    """Top-left wordmark, top-right counter, bottom progress bar."""
+    # Top-left: 4×36 accent bar + monospace wordmark
+    draw.rectangle([(80, 80), (84, 116)], fill=accent)
+    draw.text(
+        (98, 88), "GLITCH · EXECUTOR",
+        font=_font(_FONT_MONO, 20),
+        fill=(255, 255, 255, 235),
+    )
+    # Top-right: 02 / 07
+    counter = f"{slide_num:02d} / {slide_total:02d}"
+    cf = _font(_FONT_MONO, 22)
+    cw = draw.textlength(counter, font=cf)
+    draw.text(
+        (SLIDE_W - 80 - cw, 88), counter, font=cf,
+        fill=_hex_to_rgba(secondary, 230),
+    )
+    # Bottom progress bar
+    bar_y = SLIDE_H - 38
+    bar_x0, bar_x1 = 80, SLIDE_W - 80
+    draw.rectangle([(bar_x0, bar_y), (bar_x1, bar_y + 3)], fill=(70, 70, 75, 200))
+    fill_w = int((bar_x1 - bar_x0) * (slide_num / slide_total))
+    draw.rectangle([(bar_x0, bar_y), (bar_x0 + fill_w, bar_y + 3)], fill=accent)
+
+
+# ── Layout: HOOK ────────────────────────────────────────────────────────────
+
+def _layout_hook(
+    draw: ImageDraw.ImageDraw,
+    bg: Image.Image,
+    title: str,
+    body: str,
+    accent: str,
+    secondary: str,
+) -> None:
+    """Hero cover slide. OVERSIZED headline + accent bar + subtitle + footer + corner accent."""
+    # Decorative corner accent (top-right): short diagonal segment + small dot.
+    # Kept above the headline area so it never crosses copy.
+    draw.line(
+        [(SLIDE_W - 60, 160), (SLIDE_W - 200, 300)],
+        fill=_hex_to_rgba(accent, 160), width=1,
+    )
+    draw.ellipse(
+        [(SLIDE_W - 208, 292), (SLIDE_W - 192, 308)],
+        fill=accent,
+    )
+
+    # Auto-shrink headline so it always fits 2-3 lines.
+    title_font, title_lines = _autofit_title(title, max_size=92, min_size=58)
+    body_font = _font(_FONT_REGULAR, 30)
+    body_lines = _wrap_text(body, body_font, CONTENT_W - 80, draw)
+
+    title_h = sum(title_font.size + 14 for _ in title_lines)
+    body_h = sum(body_font.size + 8 for _ in body_lines)
+    gap = 36
+    total_h = title_h + 24 + 6 + 16 + gap + body_h  # title + gap + bar + gap + body
+    y_top = (SLIDE_H - total_h) // 2
+
+    y = y_top
+    for line in title_lines:
+        draw.text((CONTENT_X, y), line, font=title_font, fill=(255, 255, 255, 255))
+        y += title_font.size + 14
+    # Accent bar
+    y += 24
+    draw.rectangle([(CONTENT_X, y), (CONTENT_X + 200, y + 6)], fill=accent)
+    y += 6 + 22
+    for line in body_lines:
+        draw.text((CONTENT_X, y), line, font=body_font, fill=(220, 220, 222, 255))
+        y += body_font.size + 8
+
+    _draw_footer_wordmark(draw, accent, secondary)
+
+
+# ── Layout: CTA ─────────────────────────────────────────────────────────────
+
+def _layout_cta(
+    draw: ImageDraw.ImageDraw,
+    bg: Image.Image,
+    title: str,
+    body: str,
+    link: str,
+    accent: str,
+    secondary: str,
+) -> None:
+    """Closing slide: hero text + URL + decorative converging lines."""
+    # Closing glyph top-right: three stacked horizontal bars decreasing
+    gx, gy = SLIDE_W - 110, 150
+    for i, w in enumerate([34, 22, 12]):
+        draw.rectangle([(gx, gy + i * 8), (gx + w, gy + i * 8 + 3)], fill=accent)
+
+    title_font, title_lines = _autofit_title(title, max_size=72, min_size=48)
+    body_font = _font(_FONT_REGULAR, 28)
+    body_lines = _wrap_text(body, body_font, CONTENT_W - 80, draw)
+
+    title_h = sum(title_font.size + 12 for _ in title_lines)
+    body_h = sum(body_font.size + 8 for _ in body_lines)
+    link_h = 0
+    link_font: ImageFont.FreeTypeFont | None = None
+    if link:
+        link_font = _fit_mono_to_width(link, CONTENT_W - 80, 26, min_size=18)
+        link_h = link_font.size + 14
+    # Anchor text to upper portion so converging lines decorate the empty
+    # bottom half without crossing copy.
+    y_top = 280
+    text_block_end = y_top + title_h + 22 + 6 + 18 + body_h + (28 + link_h if link else 0)
+
+    # Decorative converging lines from bottom-center fanning toward upper-mid
+    # — but only in the empty space BELOW the text block.
+    cx = SLIDE_W // 2
+    line_top_y = max(text_block_end + 60, 900)
+    for i, off in enumerate([-360, -210, -70, 70, 210, 360]):
+        alpha = 35 if i in (0, 5) else 60
+        draw.line(
+            [(cx + off, SLIDE_H - 80), (cx + off // 6, line_top_y)],
+            fill=_hex_to_rgba(accent, alpha), width=1,
+        )
+
+    y = y_top
+    for line in title_lines:
+        draw.text((CONTENT_X, y), line, font=title_font, fill=(255, 255, 255, 255))
+        y += title_font.size + 12
+    y += 22
+    draw.rectangle([(CONTENT_X, y), (CONTENT_X + 180, y + 6)], fill=accent)
+    y += 6 + 18
+    for line in body_lines:
+        draw.text((CONTENT_X, y), line, font=body_font, fill=(220, 220, 222, 255))
+        y += body_font.size + 8
+    if link and link_font is not None:
+        y += 28
+        draw.text((CONTENT_X, y), link, font=link_font, fill=accent)
+
+    _draw_footer_wordmark(draw, accent, secondary)
+
+
+# ── Layout: SPLIT (text top, 3-node diagram bottom) ─────────────────────────
+
+def _layout_split(
+    draw: ImageDraw.ImageDraw,
+    bg: Image.Image,
+    title: str,
+    body: str,
+    accent: str,
+) -> None:
+    """Top half: title + body. Bottom half: 3-node connected diagram."""
+    title_font, title_lines = _autofit_title(title, max_size=64, min_size=44)
+    body_font = _font(_FONT_REGULAR, 26)
+    body_lines = _wrap_text(body, body_font, CONTENT_W - 60, draw)
+
+    y = 260
+    for line in title_lines:
+        draw.text((CONTENT_X, y), line, font=title_font, fill=(255, 255, 255, 255))
+        y += title_font.size + 10
+    y += 18
+    draw.rectangle([(CONTENT_X, y), (CONTENT_X + 130, y + 4)], fill=accent)
+    y += 4 + 22
+    for line in body_lines:
+        draw.text((CONTENT_X, y), line, font=body_font, fill=(220, 220, 222, 255))
+        y += body_font.size + 8
+
+    # 3-node diagram in bottom 40% of frame
+    diag_y = SLIDE_H - 320
+    nodes = [(SLIDE_W // 2 - 320, diag_y), (SLIDE_W // 2, diag_y), (SLIDE_W // 2 + 320, diag_y)]
+    for cx, cy in nodes:
+        draw.ellipse([(cx - 32, cy - 32), (cx + 32, cy + 32)], outline=accent, width=2)
+        draw.ellipse([(cx - 6, cy - 6), (cx + 6, cy + 6)], fill=accent)
+    # Arrows between nodes
+    for (x0, y0), (x1, _) in zip(nodes[:-1], nodes[1:]):
+        draw.line([(x0 + 32, y0), (x1 - 38, y0)], fill=accent, width=2)
+        # Arrow head
+        draw.polygon(
+            [(x1 - 38, y0 - 5), (x1 - 38, y0 + 5), (x1 - 32, y0)],
+            fill=accent,
+        )
+
+
+# ── Layout: STAT (giant focal glyph centered, headline below) ───────────────
+
+def _layout_stat(
+    draw: ImageDraw.ImageDraw,
+    bg: Image.Image,
+    title: str,
+    body: str,
+    accent: str,
+) -> None:
+    """Big focal glyph (a stylized chevron) up top, headline + body underneath."""
+    cx = SLIDE_W // 2
+    glyph_y = 410
+    # Stylized upward-chevron in accent + soft echoes
+    for i, alpha in enumerate([255, 60, 30]):
+        offset = i * 28
+        draw.line(
+            [(cx - 130 - offset, glyph_y + offset), (cx, glyph_y - 90 + offset)],
+            fill=_hex_to_rgba(accent, alpha), width=8 if i == 0 else 4,
+        )
+        draw.line(
+            [(cx + 130 + offset, glyph_y + offset), (cx, glyph_y - 90 + offset)],
+            fill=_hex_to_rgba(accent, alpha), width=8 if i == 0 else 4,
+        )
+
+    title_font, title_lines = _autofit_title(title, max_size=58, min_size=40)
+    body_font = _font(_FONT_REGULAR, 26)
+    body_lines = _wrap_text(body, body_font, CONTENT_W - 60, draw)
+
+    y = 720
+    for line in title_lines:
+        draw.text((CONTENT_X, y), line, font=title_font, fill=(255, 255, 255, 255))
+        y += title_font.size + 10
+    y += 18
+    draw.rectangle([(CONTENT_X, y), (CONTENT_X + 130, y + 4)], fill=accent)
+    y += 4 + 22
+    for line in body_lines:
+        draw.text((CONTENT_X, y), line, font=body_font, fill=(220, 220, 222, 255))
+        y += body_font.size + 8
+
+
+# ── Layout: CODE (terminal-panel framed text) ───────────────────────────────
+
+def _layout_code(
+    draw: ImageDraw.ImageDraw,
+    bg: Image.Image,
+    title: str,
+    body: str,
+    accent: str,
+) -> None:
+    """Centered terminal panel with title (bold) + body (mono) inside."""
+    panel_x0, panel_x1 = 80, SLIDE_W - 80
+    panel_y0, panel_y1 = 280, SLIDE_H - 220
+    # Panel background
+    draw.rounded_rectangle(
+        [(panel_x0, panel_y0), (panel_x1, panel_y1)],
+        radius=12, fill=(22, 22, 32, 245), outline=(60, 60, 70, 220), width=1,
+    )
+    # macOS-style header dots
+    for i, color in enumerate([(255, 95, 86), (255, 189, 46), (39, 201, 63)]):
+        cx = panel_x0 + 28 + i * 22
+        cy = panel_y0 + 22
+        draw.ellipse([(cx - 7, cy - 7), (cx + 7, cy + 7)], fill=color)
+
+    # Title + body inside panel
+    inner_x = panel_x0 + 36
+    inner_w = panel_x1 - panel_x0 - 72
+    title_font, title_lines = _autofit_title(title, max_size=50, min_size=34, max_width=inner_w)
+    body_font = _font(_FONT_MONO, 22)
+    body_lines = _wrap_text(body, body_font, inner_w, draw)
+
+    y = panel_y0 + 80
+    for line in title_lines:
+        draw.text((inner_x, y), line, font=title_font, fill=(255, 255, 255, 255))
+        y += title_font.size + 10
+    y += 14
+    draw.rectangle([(inner_x, y), (inner_x + 120, y + 4)], fill=accent)
+    y += 4 + 22
+    for line in body_lines:
+        draw.text((inner_x, y), line, font=body_font, fill=(210, 215, 220, 255))
+        y += body_font.size + 8
+
+
+# ── Layout: ASYMMETRIC (text left two-thirds, dot column right) ─────────────
+
+def _layout_asymmetric(
+    draw: ImageDraw.ImageDraw,
+    bg: Image.Image,
+    title: str,
+    body: str,
+    accent: str,
+) -> None:
+    """Headline + body anchored left 2/3 of frame; vertical dot indicator on right edge."""
+    text_w = int(CONTENT_W * 0.65)
+    title_font, title_lines = _autofit_title(title, max_size=60, min_size=40, max_width=text_w)
+    body_font = _font(_FONT_REGULAR, 26)
+    body_lines = _wrap_text(body, body_font, text_w, draw)
+
+    title_h = sum(title_font.size + 10 for _ in title_lines)
+    body_h = sum(body_font.size + 8 for _ in body_lines)
+    total_h = title_h + 18 + 4 + 22 + body_h
+    y_top = (SLIDE_H - total_h) // 2
+
+    y = y_top
+    for line in title_lines:
+        draw.text((CONTENT_X, y), line, font=title_font, fill=(255, 255, 255, 255))
+        y += title_font.size + 10
+    y += 18
+    draw.rectangle([(CONTENT_X, y), (CONTENT_X + 130, y + 4)], fill=accent)
+    y += 4 + 22
+    for line in body_lines:
+        draw.text((CONTENT_X, y), line, font=body_font, fill=(220, 220, 222, 255))
+        y += body_font.size + 8
+
+    # Right-edge dot column — 7 small accent squares evenly distributed
+    col_x = SLIDE_W - 130
+    for i in range(7):
+        cy = 280 + i * 110
+        draw.rectangle([(col_x, cy), (col_x + 14, cy + 14)], fill=accent)
+
+
+# ── Layout: HALO (concentric rings centered + headline below) ───────────────
+
+def _layout_halo(
+    draw: ImageDraw.ImageDraw,
+    bg: Image.Image,
+    title: str,
+    body: str,
+    accent: str,
+) -> None:
+    """Centered concentric rings + headline + body below the halo."""
+    cx, cy = SLIDE_W // 2, 460
+    # 4 concentric rings — outer faded, inner bright
+    for i, (radius, alpha) in enumerate([(220, 30), (180, 60), (140, 110), (100, 255)]):
+        bbox = [(cx - radius, cy - radius), (cx + radius, cy + radius)]
+        draw.ellipse(bbox, outline=_hex_to_rgba(accent, alpha), width=2 if i < 3 else 3)
+
+    # Headline + body BELOW the halo
+    title_font, title_lines = _autofit_title(title, max_size=54, min_size=36)
+    body_font = _font(_FONT_REGULAR, 26)
+    body_lines = _wrap_text(body, body_font, CONTENT_W - 60, draw)
+
+    y = 760
+    for line in title_lines:
+        draw.text((CONTENT_X, y), line, font=title_font, fill=(255, 255, 255, 255))
+        y += title_font.size + 10
+    y += 18
+    draw.rectangle([(CONTENT_X, y), (CONTENT_X + 130, y + 4)], fill=accent)
+    y += 4 + 22
+    for line in body_lines:
+        draw.text((CONTENT_X, y), line, font=body_font, fill=(220, 220, 222, 255))
+        y += body_font.size + 8
+
+
+# ── Shared helpers ──────────────────────────────────────────────────────────
+
+def _draw_footer_wordmark(
+    draw: ImageDraw.ImageDraw, accent: str, secondary: str,
+) -> None:
+    """glitchexecutor.com + secondary pip near bottom — used on hook/cta only."""
+    footer_font = _font(_FONT_MONO, 20)
+    text = "glitchexecutor.com"
+    fy = SLIDE_H - 90
+    draw.text((CONTENT_X, fy), text, font=footer_font, fill=(200, 200, 200, 220))
+    fw = draw.textlength(text, font=footer_font)
+    pip_x = CONTENT_X + int(fw) + 14
+    draw.rectangle(
+        [(pip_x, fy + 2), (pip_x + 10, fy + 14)],
+        fill=_hex_to_rgba(secondary, 255),
+    )
+
+
+def _autofit_title(
+    text: str,
+    *,
+    max_size: int,
+    min_size: int,
+    max_width: int = CONTENT_W - 40,
+) -> tuple[ImageFont.FreeTypeFont, list[str]]:
+    """Pick the largest title font where the text fits in ≤3 lines."""
+    tmp = Image.new("RGB", (1, 1))
+    d = ImageDraw.Draw(tmp)
+    size = max_size
+    while size > min_size:
+        font = _font(_FONT_BOLD, size)
+        lines = _wrap_text(text, font, max_width, d)
+        if len(lines) <= 3:
+            return font, lines
+        size -= 4
+    font = _font(_FONT_BOLD, min_size)
+    return font, _wrap_text(text, font, max_width, d)
 
 
 def _hex_to_rgba(hex_color: str, alpha: int = 255) -> tuple[int, int, int, int]:

@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     fal_api_key: str = ""
     fal_image_model: str = "fal-ai/flux/schnell"
 
+    # --- Image generation (Leonardo.ai) — poster/typography-style backgrounds ---
+    # Used for slide + quote-card backgrounds. We never ask Leonardo to render
+    # real text — text is overlaid in Pillow. Leonardo Phoenix is the
+    # poster/illustration model; Vision XL is more photoreal. Phoenix is
+    # the default because we want abstract editorial-poster look, not photos.
+    # Model IDs: https://docs.leonardo.ai/reference/list_models_v3
+    leonardo_api_key: str = ""
+    leonardo_model_id: str = "de7d3faf-762f-48e0-b3b7-9d0ac3a3fcf3"  # Leonardo Phoenix 1.0
+    leonardo_base_url: str = "https://cloud.leonardo.ai/api/rest/v1"
+
     # --- Sheet-driven posting (scheduled from a Google Sheet) ---
     # When set, the scheduler reads this sheet and fires queued posts at the
     # configured cadence. Columns are managed by sheet_posting.reader.

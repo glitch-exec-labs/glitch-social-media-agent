@@ -131,6 +131,155 @@ async def _download(url: str, out_path: pathlib.Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Leonardo.ai — poster/illustration backgrounds
+#
+# Use for slide / quote-card BACKGROUND assets only — never ask Leonardo to
+# render real copy. Text is rendered by Pillow on top of the background.
+# This is the "AI for visuals, code for typography" pattern: AI image models
+# are not layout engines, so we only ask them for the parts they're good at.
+#
+# Leonardo's REST API is async: POST /generations creates a job, then we
+# poll GET /generations/<id> until status="COMPLETE" and image URLs appear.
+# Phoenix model is poster-grade illustration; Vision XL is photoreal.
+# ---------------------------------------------------------------------------
+
+# Pixel dimensions per aspect — Leonardo accepts 512–1536 on each axis. We
+# generate at 1080-line dimensions so backgrounds match Pillow slide size
+# (1080×1350) without large up/down-scaling.
+_LEONARDO_PX: dict[str, tuple[int, int]] = {
+    "1:1":  (1024, 1024),
+    "4:5":  (1080, 1344),    # Leonardo rounds to 64 — 1344 ≈ 1350
+    "4:3":  (1024, 768),
+    "16:9": (1280, 720),
+}
+
+
+async def generate_background(
+    prompt: str,
+    brand_id: str,
+    *,
+    aspect: AspectRatio = "1:1",
+    negative_prompt: str | None = None,
+) -> pathlib.Path:
+    """Generate a background image via Leonardo.ai. Returns local PNG path.
+
+    The prompt should describe COMPOSITION, MOOD, COLOR, TEXTURE — not text.
+    We hard-append a negative prompt that forbids text/letters/words so
+    Leonardo doesn't bake gibberish typography in. The caller (carousel /
+    quote_card) overlays real copy with Pillow afterward.
+
+    Falls back to FLUX-via-fal if LEONARDO_API_KEY isn't set, so existing
+    deployments keep working while we cut over.
+    """
+    s = settings()
+    if s.is_dry_run:
+        log.info("image_gen.bg.dry_run", brand_id=brand_id, prompt=prompt[:80])
+        return pathlib.Path(f"/tmp/dry-run-bg-{uuid.uuid4().hex[:8]}.png")
+
+    if not s.leonardo_api_key:
+        # Soft fallback to FLUX so the pipeline still works without Leonardo.
+        log.warning("image_gen.bg.no_leonardo_key.falling_back_to_flux")
+        return await generate_image(prompt=prompt, brand_id=brand_id, aspect=aspect)
+
+    out_dir = pathlib.Path(s.video_storage_path) / "images" / brand_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{uuid.uuid4().hex}.png"
+
+    image_url = await _generate_via_leonardo(
+        prompt=prompt, aspect=aspect, negative_prompt=negative_prompt,
+    )
+    await _download(image_url, out_path)
+
+    log.info(
+        "image_gen.bg.done",
+        brand_id=brand_id, provider="leonardo",
+        path=str(out_path), size_kb=out_path.stat().st_size // 1024,
+    )
+    return out_path
+
+
+# Default negative prompt — keeps Leonardo from rendering text/UI noise that
+# would clash with the Pillow overlay. Per-call override possible.
+_LEONARDO_DEFAULT_NEG = (
+    "text, letters, words, captions, typography, watermark, logo, "
+    "signature, ui, interface, buttons, menu, low quality, blurry, "
+    "jpeg artifacts, cartoon, clipart, stock photo, people, faces, hands"
+)
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=20),
+    retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError, ImageGenError)),
+)
+async def _generate_via_leonardo(
+    *,
+    prompt: str,
+    aspect: AspectRatio,
+    negative_prompt: str | None,
+) -> str:
+    """POST to Leonardo, poll until complete, return the first image URL.
+
+    Total wall time typically 6-15s on Phoenix; we cap at 90s to keep the
+    carousel pipeline (parallel slide gen) bounded.
+    """
+    s = settings()
+    width, height = _LEONARDO_PX.get(aspect, (1024, 1024))
+    base = s.leonardo_base_url.rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {s.leonardo_api_key}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "modelId": s.leonardo_model_id,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt or _LEONARDO_DEFAULT_NEG,
+        "width": width,
+        "height": height,
+        "num_images": 1,
+        # Phoenix-specific knobs — safe to send to other models too, ignored.
+        "alchemy": True,
+        "contrast": 3.5,
+    }
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(f"{base}/generations", headers=headers, json=payload)
+        if resp.status_code >= 400:
+            raise ImageGenError(
+                f"Leonardo POST /generations {resp.status_code}: {resp.text[:400]}"
+            )
+        data = resp.json()
+        gen_id = (data.get("sdGenerationJob") or {}).get("generationId")
+        if not gen_id:
+            raise ImageGenError(f"Leonardo: no generationId in response: {data!r}")
+
+        # Poll for completion. Phoenix typically 6-15s; we check every 2s up to 90s.
+        deadline = asyncio.get_event_loop().time() + 90
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(2)
+            poll = await client.get(f"{base}/generations/{gen_id}", headers=headers)
+            if poll.status_code >= 400:
+                raise ImageGenError(
+                    f"Leonardo GET /generations/{gen_id} {poll.status_code}: {poll.text[:400]}"
+                )
+            body = poll.json().get("generations_by_pk") or {}
+            status = body.get("status")
+            if status == "COMPLETE":
+                images = body.get("generated_images") or []
+                if not images:
+                    raise ImageGenError(f"Leonardo COMPLETE but no images: {body!r}")
+                url = images[0].get("url")
+                if not url:
+                    raise ImageGenError(f"Leonardo image had no URL: {images[0]!r}")
+                return url
+            if status == "FAILED":
+                raise ImageGenError(f"Leonardo generation FAILED: {body!r}")
+
+    raise ImageGenError(f"Leonardo generation {gen_id} timed out after 90s")
+
+
+# ---------------------------------------------------------------------------
 # Designed images via OpenAI gpt-image-2 (via fal.ai)
 #
 # Use for posts that need TEXT RENDERED INSIDE the image — quote cards,
